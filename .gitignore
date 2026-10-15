@@ -1,0 +1,14 @@
+# 本機環境與 IDE
+local.properties
+.idea/
+*.iml
+.gradle/
+# 建置產物與快取
+build/
+app/build/
+app/.cxx/
+# 歷次審查 HTML
+GenieBox_Code_Review*.html
+# 大型原生二進位產物（由 ./scripts/build_cores.sh 自行建置）
+app/src/main/jniLibs/
+app/src/main/assets/ppsspp/

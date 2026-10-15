@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- Dark Background -->
+    <path
+        android:fillColor="#0F1115"
+        android:pathData="M0,0h320v180h-320z" />
+
+    <!-- Accent Golden Glow Ring -->
+    <path
+        android:fillColor="#33E5A93C"
+        android:pathData="M160,90m-60,0a60,60 0,1 1,120 0a60,60 0,1 1,-120 0" />
+
+    <!-- Lamp / Genie box motif -->
+    <path
+        android:fillColor="#E5A93C"
+        android:pathData="M130,105h60c5,0 8,-4 8,-9l-4,-18c-2,-9 -9,-16 -18,-18l-16,-3l-16,3c-9,2 -16,9 -18,18l-4,18c0,5 3,9 8,9z" />
+    <path
+        android:fillColor="#FAD980"
+        android:pathData="M145,55h30c3,0 5,-2 5,-5s-2,-5 -5,-5h-30c-3,0 -5,2 -5,5s2,5 5,5z" />
+    <path
+        android:fillColor="#E5A93C"
+        android:pathData="M120,110h80v10h-80z" />
+</vector>

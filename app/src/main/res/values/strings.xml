@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">阿拉丁 GenieBox</string>
+    <string name="app_desc">開源復古遊戲電視盒主控台</string>
+
+    <!-- Platform Names -->
+    <string name="platform_nes">任天堂 NES / FC</string>
+    <string name="platform_gb">Game Boy / Color</string>
+    <string name="platform_gba">Game Boy Advance</string>
+    <string name="platform_sfc">超任 Super Famicom</string>
+    <string name="platform_ps1">PlayStation 1</string>
+    <string name="platform_psp">PlayStation Portable</string>
+
+    <!-- Navigation / Categories -->
+    <string name="category_all">全部遊戲</string>
+    <string name="category_favorites">我的收藏</string>
+    <string name="category_recent">最近遊玩</string>
+
+    <!-- Settings / Status -->
+    <string name="status_ready">已準備好</string>
+    <string name="status_offline">來源離線</string>
+    <string name="status_scanning">掃描中…</string>
+    <string name="status_missing_core">缺少核心動態庫</string>
+    <string name="status_missing_bios">缺少必要 BIOS</string>
+
+    <!-- Pause Menu -->
+    <string name="menu_resume">繼續遊戲</string>
+    <string name="menu_save_state">即時存檔</string>
+    <string name="menu_load_state">讀取即時存檔</string>
+    <string name="menu_reset">重新開始</string>
+    <string name="menu_disk_swap">換片 (Disk Swap)</string>
+    <string name="menu_controller">控制器設定</string>
+    <string name="menu_video">影音與畫面比例</string>
+    <string name="menu_exit">儲存並離開</string>
+</resources>
