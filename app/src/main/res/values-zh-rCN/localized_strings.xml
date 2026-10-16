@@ -22,7 +22,7 @@
     <string name="ui_load_failed_empty_slot_or_incompatible_version">加载失败 (该槽位无存档或版本不兼容)</string>
     <string name="ui_restart">重新开始 (Reset)</string>
     <string name="ui_save_failed">存档失败</string>
-    <string name="ui_leave_without_saving">强制放弃本次进度并离开</string>
+    <string name="ui_leave_without_saving">不保存并离开</string>
     <string name="ui_all_games">全部游戏</string>
     <string name="ui_snes">超任 SFC</string>
     <string name="ui_favorites">我的收藏</string>

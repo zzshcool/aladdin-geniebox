@@ -453,14 +453,12 @@ fun PlayerScreen(
                     enabled = !menuBusy,
                     onClick = { showRestartConfirmation = true }
                 )
-                if (allowDiscard) {
-                    FocusableButton(
-                        text = AppLanguage.text(R.string.ui_leave_without_saving),
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !menuBusy,
-                        onClick = { showDiscardConfirmation = true }
-                    )
-                }
+                FocusableButton(
+                    text = AppLanguage.text(R.string.ui_leave_without_saving),
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !menuBusy,
+                    onClick = { showDiscardConfirmation = true }
+                )
             }
             val speedActions: @Composable ColumnScope.() -> Unit = {
                 Text(AppLanguage.text(R.string.play_speed), color = TextPrimary)

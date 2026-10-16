@@ -153,7 +153,7 @@ class MainActivity : ComponentActivity() {
         app.emulatorSession.enterForeground()
         hideSystemUi()
         // 回到前景時自動核對外接儲存設備狀態 (Finding 14)
-        app.storageCoordinator.checkSourcesAvailability(autoScanNewSources = false)
+        app.storageCoordinator.checkSourcesAvailability(autoScanNewSources = true)
     }
 
     override fun onPause() {
