@@ -1,6 +1,9 @@
 package com.aladdin.geniebox.feature.library
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -15,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,6 +31,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -57,10 +64,17 @@ enum class LibraryCategory(val displayName: String) {
 @Composable
 fun LibraryScreen(
     onGameSelect: (Game) -> Unit,
-    onNavigateSettings: () -> Unit
+    onNavigateSettings: () -> Unit,
+    onNavigateWelcome: () -> Unit
 ) {
     val app = GenieApplication.instance
     val coroutineScope = rememberCoroutineScope()
+    val isTvDevice = remember { app.settingsRepository.isTvDevice() }
+    val configuration = LocalConfiguration.current
+    val compactLandscape = !isTvDevice && configuration.screenWidthDp > configuration.screenHeightDp
+    val posterHeight = if (compactLandscape) (configuration.screenHeightDp - 144).coerceIn(128, 220).dp else 260.dp
+
+    BackHandler(enabled = !isTvDevice, onBack = onNavigateWelcome)
 
     var selectedCategory by remember { mutableStateOf(LibraryCategory.ALL) }
     var searchQuery by remember { mutableStateOf("") }
@@ -150,103 +164,77 @@ fun LibraryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(BgDark)
-                    .padding(horizontal = 24.dp, vertical = 12.dp)
+                    .padding(horizontal = if (isTvDevice) 32.dp else 20.dp, vertical = if (compactLandscape) 4.dp else 16.dp),
+                verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 4.dp else 16.dp)
             ) {
-                // 頂部列：以可用寬度響應式分流手機直向窄版 (2 行) 與 TV / 橫向寬版 (單行)
-                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                    val isNarrow = maxWidth < 640.dp
-                    if (isNarrow) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "阿拉丁 GenieBox",
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = AladdinGold
-                                )
-                                FocusableButton(
-                                    text = "設定與手把",
-                                    onClick = onNavigateSettings
-                                )
+                if (compactLandscape) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("遊戲庫", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("搜尋遊戲", fontSize = 14.sp) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f).height(56.dp).focusRequester(searchFocusRequester)
+                        )
+                        TextButton(onClick = onNavigateWelcome) { Text("起始頁") }
+                    }
+                } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("GENIEBOX", fontSize = 12.sp, color = TextSecondary,
+                            fontWeight = FontWeight.SemiBold, letterSpacing = 2.sp)
+                        Text(
+                            text = when (selectedCategory) {
+                                LibraryCategory.FAVORITES -> "我的收藏"
+                                LibraryCategory.RECENT -> "最近遊玩"
+                                else -> "遊戲庫"
+                            },
+                            fontSize = if (isTvDevice) 32.sp else 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!isTvDevice) {
+                            TextButton(onClick = onNavigateWelcome) {
+                                Text("起始頁")
                             }
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                placeholder = { Text("搜尋遊戲 (中文/拼音/注音/英文)…", fontSize = 13.sp) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Search, contentDescription = "搜尋", tint = TextSecondary)
-                                },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .focusRequester(searchFocusRequester)
-                                    .fillMaxWidth()
-                                    .height(50.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = AladdinGold,
-                                    unfocusedBorderColor = DividerDark,
-                                    focusedTextColor = TextPrimary,
-                                    unfocusedTextColor = TextPrimary,
-                                    cursorColor = AladdinGold
-                                )
-                            )
                         }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "阿拉丁 GenieBox",
-                                fontSize = 24.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = AladdinGold
-                            )
-
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = searchQuery,
-                                    onValueChange = { searchQuery = it },
-                                    placeholder = { Text("搜尋遊戲 (中文/拼音/注音/英文)…", fontSize = 13.sp) },
-                                    leadingIcon = {
-                                        Icon(Icons.Default.Search, contentDescription = "搜尋", tint = TextSecondary)
-                                    },
-                                    singleLine = true,
-                                    modifier = Modifier
-                                        .focusRequester(searchFocusRequester)
-                                        .width(320.dp)
-                                        .height(50.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = AladdinGold,
-                                        unfocusedBorderColor = DividerDark,
-                                        focusedTextColor = TextPrimary,
-                                        unfocusedTextColor = TextPrimary,
-                                        cursorColor = AladdinGold
-                                    )
-                                )
-
-                                FocusableButton(
-                                    text = "設定與手把",
-                                    onClick = onNavigateSettings
-                                )
-                            }
+                        IconButton(onClick = onNavigateSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "設定與遊戲資料夾", tint = TextSecondary)
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // 分類標籤列
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("搜尋你的遊戲", color = TextTertiary) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextSecondary) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AladdinGold,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedContainerColor = CardDark,
+                        unfocusedContainerColor = CardDark,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        cursorColor = AladdinGold
+                    )
+                )
+                }
                 ScrollableTabRow(
                     selectedTabIndex = selectedCategory.ordinal,
                     containerColor = BgDark,
@@ -255,32 +243,15 @@ fun LibraryScreen(
                     divider = {}
                 ) {
                     LibraryCategory.entries.forEach { category ->
-                        val isSelected = (category == selectedCategory)
-                        val interactionSource = remember { MutableInteractionSource() }
-                        val isFocused by interactionSource.collectIsFocusedAsState()
-
+                        val isSelected = category == selectedCategory
                         Tab(
                             selected = isSelected,
                             onClick = { selectedCategory = category },
-                            interactionSource = interactionSource,
-                            modifier = Modifier
-                                .focusable(interactionSource = interactionSource)
-                                .padding(horizontal = 4.dp, vertical = 6.dp)
-                                .background(
-                                    color = if (isFocused) AladdinGold.copy(alpha = 0.2f) else Color.Transparent,
-                                    shape = RoundedCornerShape(8.dp)
-                                ),
                             text = {
-                                Text(
-                                    text = category.displayName,
-                                    fontSize = 15.sp,
-                                    fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Normal,
-                                    color = when {
-                                        isFocused -> AladdinGoldLight
-                                        isSelected -> AladdinGold
-                                        else -> TextSecondary
-                                    }
-                                )
+                                Text(category.displayName,
+                                    fontSize = 14.sp,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isSelected) TextPrimary else TextSecondary)
                             }
                         )
                     }
@@ -288,83 +259,132 @@ fun LibraryScreen(
             }
         },
         bottomBar = {
-            // TV 提示條：顯示實際控制器提示
-            Surface(
-                color = CardDark,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("提示：", fontSize = 12.sp, color = AladdinGold, fontWeight = FontWeight.Bold)
-                    Text("【A / 確認】啟動遊戲", fontSize = 12.sp, color = TextSecondary)
-                    Text("【Y】切換收藏", fontSize = 12.sp, color = TextSecondary)
-                    Text("【L1 / R1】切換分類標籤", fontSize = 12.sp, color = TextSecondary)
-                    Text("【返回】退出選單", fontSize = 12.sp, color = TextSecondary)
+            if (isTvDevice) {
+                Surface(color = CardDark) {
+                    Text(
+                        text = "A  開始遊戲     Y  收藏     L / R  切換平台",
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 14.dp),
+                        fontSize = 13.sp,
+                        color = TextSecondary
+                    )
+                }
+            } else if (!compactLandscape) {
+                NavigationBar(containerColor = BgDark, tonalElevation = 0.dp) {
+                    NavigationBarItem(
+                        selected = selectedCategory != LibraryCategory.FAVORITES && selectedCategory != LibraryCategory.RECENT,
+                        onClick = { selectedCategory = LibraryCategory.ALL },
+                        icon = { Icon(Icons.Default.Apps, contentDescription = null) },
+                        label = { Text("遊戲庫") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedCategory == LibraryCategory.RECENT,
+                        onClick = { selectedCategory = LibraryCategory.RECENT },
+                        icon = { Icon(Icons.Default.History, contentDescription = null) },
+                        label = { Text("最近") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedCategory == LibraryCategory.FAVORITES,
+                        onClick = { selectedCategory = LibraryCategory.FAVORITES },
+                        icon = { Icon(Icons.Default.Favorite, contentDescription = null) },
+                        label = { Text("收藏") }
+                    )
+                    NavigationBarItem(
+                        selected = false,
+                        onClick = onNavigateSettings,
+                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        label = { Text("設定") }
+                    )
                 }
             }
         }
     ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 24.dp)
-        ) {
-            if (displayedGames.isEmpty()) {
-                // 空狀態展示
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+        Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            if (compactLandscape) {
+                Column(
+                    modifier = Modifier.width(56.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = if (searchQuery.isNotEmpty()) "找不到符合「$searchQuery」的遊戲" else "尚未加入任何遊戲",
-                            fontSize = 18.sp,
-                            color = TextSecondary,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = "請確認已插入包含 GenieROMs/ 目錄之 USB 或 SD 卡，並至設定中完成來源授權與掃描。",
-                            fontSize = 14.sp,
-                            color = TextTertiary
-                        )
-                        FocusableButton(
-                            text = "開啟設定與來源管理",
-                            isPrimary = true,
-                            onClick = onNavigateSettings
-                        )
+                    IconButton(onClick = { selectedCategory = LibraryCategory.ALL }) {
+                        Icon(Icons.Default.Apps, contentDescription = "遊戲庫",
+                            tint = if (selectedCategory != LibraryCategory.RECENT && selectedCategory != LibraryCategory.FAVORITES) AladdinGold else TextSecondary)
+                    }
+                    IconButton(onClick = { selectedCategory = LibraryCategory.RECENT }) {
+                        Icon(Icons.Default.History, contentDescription = "最近遊玩",
+                            tint = if (selectedCategory == LibraryCategory.RECENT) AladdinGold else TextSecondary)
+                    }
+                    IconButton(onClick = { selectedCategory = LibraryCategory.FAVORITES }) {
+                        Icon(Icons.Default.Favorite, contentDescription = "我的收藏",
+                            tint = if (selectedCategory == LibraryCategory.FAVORITES) AladdinGold else TextSecondary)
+                    }
+                    IconButton(onClick = onNavigateSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "設定與遊戲資料夾", tint = TextSecondary)
                     }
                 }
-            } else {
-                // 海報牆網格
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 170.dp),
-                    contentPadding = PaddingValues(vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(displayedGames, key = { it.id }) { game ->
-                        GamePosterCard(
-                            game = game,
-                            onPlay = { onGameSelect(game) },
-                            onToggleFavorite = {
-                                coroutineScope.launch {
-                                    app.gameRepository.toggleFavorite(game.id, game.isFavorite)
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(horizontal = if (isTvDevice) 32.dp else if (compactLandscape) 12.dp else 20.dp)
+            ) {
+                if (displayedGames.isEmpty()) {
+                    // 空狀態展示
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = when {
+                                    searchQuery.isNotEmpty() -> "沒有找到「$searchQuery」"
+                                    selectedCategory == LibraryCategory.FAVORITES -> "把喜歡的遊戲留在這裡"
+                                    selectedCategory == LibraryCategory.RECENT -> "下一場遊戲，從這裡開始"
+                                    else -> "你的收藏，從一個資料夾開始"
+                                },
+                                fontSize = 18.sp,
+                                color = TextSecondary,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (searchQuery.isNotEmpty()) "換個名稱，或試試拼音搜尋。" else "加入手機、USB 或 SD 卡裡的遊戲資料夾。",
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                fontSize = 14.sp,
+                                color = TextTertiary
+                            )
+                            FocusableButton(
+                                text = if (searchQuery.isNotEmpty()) "管理遊戲資料夾" else "加入遊戲資料夾",
+                                isPrimary = true,
+                                onClick = onNavigateSettings
+                            )
+                        }
+                    }
+                } else {
+                    // 海報牆網格
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = if (isTvDevice) 190.dp else 148.dp),
+                        contentPadding = PaddingValues(vertical = if (compactLandscape) 4.dp else 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(displayedGames, key = { it.id }) { game ->
+                            GamePosterCard(
+                                game = game,
+                                cardHeight = posterHeight,
+                                onPlay = { onGameSelect(game) },
+                                onToggleFavorite = {
+                                    coroutineScope.launch {
+                                        app.gameRepository.toggleFavorite(game.id, game.isFavorite)
+                                    }
+                                },
+                                onFocused = {
+                                    focusedGameId = game.id
                                 }
-                            },
-                            onFocused = {
-                                focusedGameId = game.id
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -377,12 +397,13 @@ fun GamePosterCard(
     game: Game,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onFocused: () -> Unit = {}
+    onFocused: () -> Unit = {},
+    cardHeight: Dp = 260.dp
 ) {
     TvCard(
         modifier = Modifier
             .fillMaxWidth()
-            .height(260.dp)
+            .height(cardHeight)
             .onFocusChanged { state ->
                 if (state.isFocused) {
                     onFocused()

@@ -4,9 +4,14 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -125,6 +130,34 @@ fun PlayerScreen(
             )
         }
 
+        if (!isTvDevice && !showPauseMenu && sessionState is EmulationSessionState.Running) {
+            IconButton(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 4.dp)
+                    .size(48.dp),
+                onClick = {
+                    showPauseMenu = true
+                    app.inputManager.setMenuIntercept(true)
+                    app.emulatorSession.pause()
+                }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Pause,
+                        contentDescription = "暫停，開啟返回選單",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
         // 浮動診斷 HUD (FPS、音訊狀態)
         if (showFpsHud && sessionState is EmulationSessionState.Running) {
             val runState = sessionState as EmulationSessionState.Running
@@ -224,7 +257,7 @@ fun PlayerScreen(
 
         // 暫停選單 (Pause Menu)
         if (showPauseMenu) {
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(BgDark.copy(alpha = 0.92f)),
@@ -233,8 +266,11 @@ fun PlayerScreen(
                 Column(
                     modifier = Modifier
                         .widthIn(max = 480.dp)
+                        .heightIn(max = maxHeight)
+                        .padding(vertical = 16.dp)
+                        .verticalScroll(rememberScrollState())
                         .background(CardDark, RoundedCornerShape(12.dp))
-                        .padding(28.dp),
+                        .padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -253,9 +289,27 @@ fun PlayerScreen(
                         )
                     }
 
+                    // 離開遊戲
+                    FocusableButton(
+                        text = "儲存並返回遊戲庫",
+                        isPrimary = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            coroutineScope.launch {
+                                val res = app.emulatorSession.stopGame(forceDiscard = false)
+                                if (res.success) {
+                                    app.inputManager.setMenuIntercept(false)
+                                    onExitGame()
+                                } else {
+                                    pauseStatusText = "存檔失敗：${res.errorMessage}。可選擇重試或強制退出。"
+                                }
+                            }
+                        }
+                    )
+
                     // 存檔槽位選擇 (1-5)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -354,23 +408,6 @@ fun PlayerScreen(
                             showPauseMenu = false
                             app.inputManager.setMenuIntercept(false)
                             app.emulatorSession.resume()
-                        }
-                    )
-
-                    // 離開遊戲
-                    FocusableButton(
-                        text = "安全儲存並離開",
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            coroutineScope.launch {
-                                val res = app.emulatorSession.stopGame(forceDiscard = false)
-                                if (res.success) {
-                                    app.inputManager.setMenuIntercept(false)
-                                    onExitGame()
-                                } else {
-                                    pauseStatusText = "存檔失敗：${res.errorMessage}。可選擇重試或強制退出。"
-                                }
-                            }
                         }
                     )
 

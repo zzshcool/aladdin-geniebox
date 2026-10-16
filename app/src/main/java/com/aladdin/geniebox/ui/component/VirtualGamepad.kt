@@ -53,7 +53,7 @@ fun VirtualGamepadOverlay(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 12.dp)
+                .padding(horizontal = 8.dp, vertical = 8.dp)
                 .align(Alignment.TopCenter),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -88,8 +88,8 @@ fun VirtualGamepadOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(24.dp)
-                .size((160 * scale).dp)
+                .padding(start = 8.dp, bottom = 12.dp)
+                .size((128 * scale).dp)
         ) {
             VirtualDpad(
                 onDirectionChange = { dir, pressed ->
@@ -104,7 +104,7 @@ fun VirtualGamepadOverlay(
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 24.dp, bottom = 48.dp)
+                    .padding(start = 8.dp, bottom = 48.dp)
                     .size((100 * scale).dp)
             ) {
                 VirtualAnalogStick(
@@ -120,13 +120,13 @@ fun VirtualGamepadOverlay(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             GamepadButton(
                 label = "SELECT",
-                width = 72,
-                height = 36,
+                width = 60,
+                height = 32,
                 shape = RoundedCornerShape(18.dp),
                 onStateChange = { p ->
                     if (p) triggerHaptic()
@@ -135,8 +135,8 @@ fun VirtualGamepadOverlay(
             )
             GamepadButton(
                 label = "START",
-                width = 72,
-                height = 36,
+                width = 60,
+                height = 32,
                 shape = RoundedCornerShape(18.dp),
                 onStateChange = { p ->
                     if (p) triggerHaptic()
@@ -149,8 +149,8 @@ fun VirtualGamepadOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(24.dp)
-                .size((160 * scale).dp)
+                .padding(end = 8.dp, bottom = 12.dp)
+                .size((128 * scale).dp)
         ) {
             VirtualActionButtons(
                 platform = platform,
@@ -187,14 +187,24 @@ fun GamepadButton(
                 shape = shape
             )
             .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val down = event.changes.any { it.pressed }
-                        if (down != isPressed) {
-                            isPressed = down
-                            onStateChange(down)
+                try {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val down = event.changes.any {
+                                it.pressed && it.position.x >= 0 && it.position.x < size.width &&
+                                    it.position.y >= 0 && it.position.y < size.height
+                            }
+                            if (down != isPressed) {
+                                isPressed = down
+                                onStateChange(down)
+                            }
                         }
+                    }
+                } finally {
+                    if (isPressed) {
+                        isPressed = false
+                        onStateChange(false)
                     }
                 }
             },

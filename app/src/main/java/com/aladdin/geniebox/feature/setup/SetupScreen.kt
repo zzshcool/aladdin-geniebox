@@ -6,6 +6,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -30,7 +32,7 @@ fun SetupScreen(
     val coroutineScope = rememberCoroutineScope()
     val app = GenieApplication.instance
 
-    var statusMessage by remember { mutableStateOf("請選擇外接 USB 隨身碟或 SD 卡之 ROM 目錄") }
+    var statusMessage by remember { mutableStateOf("選擇手機、USB 或 SD 卡裡的遊戲資料夾。") }
     var isProcessing by remember { mutableStateOf(false) }
 
     // SAF 目錄選擇器
@@ -74,7 +76,8 @@ fun SetupScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(BgDark)
-            .padding(48.dp),
+            .padding(horizontal = 24.dp, vertical = 20.dp)
+            .verticalScroll(rememberScrollState()),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -83,16 +86,16 @@ fun SetupScreen(
             modifier = Modifier.widthIn(max = 640.dp)
         ) {
             Text(
-                text = "歡迎使用阿拉丁 GenieBox",
-                fontSize = 28.sp,
+                text = "把回憶，放回掌心。",
+                fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
-                color = AladdinGold
+                color = TextPrimary
             )
 
             Text(
-                text = "專為電視盒與手把設計的開源復古遊戲主控台。\n" +
-                       "支援 NES、GB/GBC、GBA、超任、PS1、PSP。\n" +
-                       "所有模擬核心在同一 APK 內執行，存檔儲存於內部空間。",
+                text = "GenieBox · 你的隨身遊戲收藏庫\n" +
+                       "紅白機、Game Boy、超任、PS1 與 PSP。\n" +
+                       "選好遊戲，接著玩。",
                 fontSize = 16.sp,
                 color = TextSecondary,
                 textAlign = TextAlign.Center,
@@ -106,7 +109,7 @@ fun SetupScreen(
                     .padding(16.dp)
             ) {
                 Text(
-                    text = "目錄標準建議：於 USB 根目錄建立「GenieROMs/」並依平台建立 nes/、gba/、sfc/、ps1/ 等資料夾。",
+                    text = "手機資料夾或外接儲存都可以。\n遊戲進度保存在這台裝置，不會跟著隨身碟拔走。",
                     fontSize = 13.sp,
                     color = TextTertiary,
                     textAlign = TextAlign.Center
@@ -121,9 +124,12 @@ fun SetupScreen(
                 textAlign = TextAlign.Center
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 FocusableButton(
-                    text = if (isProcessing) "處理中…" else "選擇 ROM 儲存目錄",
+                    text = if (isProcessing) "正在整理遊戲…" else "加入遊戲資料夾",
                     isPrimary = true,
                     onClick = {
                         if (!isProcessing) {
@@ -133,7 +139,7 @@ fun SetupScreen(
                 )
 
                 FocusableButton(
-                    text = "稍後再設定 (進入主頁)",
+                    text = "先看看遊戲庫",
                     onClick = onSetupComplete
                 )
             }

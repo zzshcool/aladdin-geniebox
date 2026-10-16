@@ -14,6 +14,7 @@ import com.aladdin.geniebox.emulator.CoreRegistry
 import com.aladdin.geniebox.emulator.EmulatorSession
 import com.aladdin.geniebox.emulator.NativeEmulator
 import com.aladdin.geniebox.input.InputManager
+import kotlinx.coroutines.launch
 
 class GenieApplication : Application() {
 

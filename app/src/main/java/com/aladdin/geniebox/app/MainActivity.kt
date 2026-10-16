@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
                 // 首次若無來源且未跳過，顯示 Setup；否則顯示 Library
                 val isSetupNeeded = sources.isEmpty() && !setupCompletedOrSkipped
                 val targetDestination = when {
+                    currentDestination == "SETUP" -> AppDestination.Setup
                     isSetupNeeded && currentDestination == "DEFAULT" -> AppDestination.Setup
                     currentDestination == "SETTINGS" -> AppDestination.Settings
                     currentDestination == "PLAYER" && activeGame != null -> AppDestination.Player(activeGame!!)
@@ -81,6 +82,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onNavigateSettings = {
                                 currentDestination = "SETTINGS"
+                            },
+                            onNavigateWelcome = {
+                                currentDestination = "SETUP"
                             }
                         )
                     }
@@ -145,19 +149,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hideSystemUi() {
+        val isTvDevice = app.settingsRepository.isTvDevice()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.let { controller ->
-                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            window.decorView.windowInsetsController?.let { controller ->
+                controller.hide(WindowInsets.Type.statusBars())
+                if (isTvDevice) {
+                    controller.hide(WindowInsets.Type.navigationBars())
+                    controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                } else {
+                    controller.show(WindowInsets.Type.navigationBars())
+                }
             }
         } else {
             @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
+            window.decorView.systemUiVisibility = if (isTvDevice) (
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 or View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            ) else (
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             )
         }
