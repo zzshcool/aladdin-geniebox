@@ -8,6 +8,9 @@ import com.aladdin.geniebox.domain.model.SaveMetadata
 import com.aladdin.geniebox.domain.model.SaveType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class SaveRepository(
@@ -17,6 +20,15 @@ class SaveRepository(
     fun getSavesForGame(gameId: String): Flow<List<SaveMetadata>> =
         saveMetadataDao.getSavesForGame(gameId).map { list -> list.map { it.toDomain() } }
 
+    fun getAvailableSavesForGame(gameId: String): Flow<List<SaveMetadata>> =
+        getSavesForGame(gameId).map { saves ->
+            saves.filter { save ->
+                val file = File(save.filePath)
+                val backup = File(file.parentFile, "${file.name}.bak")
+                (file.isFile && file.canRead()) || (backup.isFile && backup.canRead())
+            }
+        }.flowOn(Dispatchers.IO)
+
     suspend fun saveState(
         gameId: String,
         coreId: String,
@@ -24,7 +36,7 @@ class SaveRepository(
         slotIndex: Int,
         stateData: ByteArray,
         thumbnailPath: String? = null
-    ): Boolean {
+    ): Boolean = withContext(Dispatchers.IO) {
         val saveType = if (slotIndex == 0) SaveType.AUTO_RESUME else SaveType.MANUAL_STATE
         val dir = storageManager.getStateDir(coreId, gameId)
         val file = File(dir, "slot_${slotIndex}.state")
@@ -46,28 +58,28 @@ class SaveRepository(
             )
             saveMetadataDao.insertOrUpdateSave(entity)
         }
-        return ok
+        ok
     }
 
-    suspend fun loadStateData(gameId: String, coreId: String, expectedCoreVersion: String, slotIndex: Int): ByteArray? {
+    suspend fun loadStateData(gameId: String, coreId: String, expectedCoreVersion: String, slotIndex: Int): ByteArray? = withContext(Dispatchers.IO) {
         val saveType = if (slotIndex == 0) SaveType.AUTO_RESUME else SaveType.MANUAL_STATE
-        val entity = saveMetadataDao.getSaveBySlot(gameId, coreId, saveType.name, slotIndex) ?: return null
-        if (entity.formatVersion != 1) return null
-        if (entity.coreVersion != expectedCoreVersion) return null
+        val entity = saveMetadataDao.getSaveBySlot(gameId, coreId, saveType.name, slotIndex) ?: return@withContext null
+        if (entity.formatVersion != 1) return@withContext null
+        if (entity.coreVersion != expectedCoreVersion) return@withContext null
         val file = File(entity.filePath)
-        return storageManager.readBytes(file)
+        storageManager.readBytes(file)
     }
 
-    suspend fun saveSram(platform: PlatformType, gameId: String, sramData: ByteArray): Boolean {
+    suspend fun saveSram(platform: PlatformType, gameId: String, sramData: ByteArray): Boolean = withContext(Dispatchers.IO) {
         val dir = storageManager.getSramDir(platform, gameId)
         val file = File(dir, "save.srm")
-        return storageManager.atomicWrite(file, sramData)
+        storageManager.atomicWrite(file, sramData)
     }
 
-    fun loadSram(platform: PlatformType, gameId: String): ByteArray? {
+    suspend fun loadSram(platform: PlatformType, gameId: String): ByteArray? = withContext(Dispatchers.IO) {
         val dir = storageManager.getSramDir(platform, gameId)
         val file = File(dir, "save.srm")
-        return storageManager.readBytes(file)
+        storageManager.readBytes(file)
     }
 
     private fun SaveMetadataEntity.toDomain(): SaveMetadata {

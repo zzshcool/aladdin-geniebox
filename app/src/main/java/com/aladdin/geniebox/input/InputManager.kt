@@ -136,8 +136,12 @@ class InputManager(
 
         // 自動分配尚未指派的手把到可用槽位
         for (dev in foundDevices) {
-            val assigned = slots.any { it.deviceId == dev.id }
-            if (!assigned) {
+            val assigned = slots.firstOrNull { it.deviceId == dev.id }
+            if (assigned != null) {
+                assigned.descriptor = dev.descriptor
+                assigned.deviceName = dev.name ?: ""
+                assigned.isConnected = true
+            } else {
                 val emptySlot = slots.firstOrNull { !it.isConnected }
                 if (emptySlot != null) {
                     emptySlot.deviceId = dev.id

@@ -1,11 +1,7 @@
 package com.aladdin.geniebox.domain.model
 
-import com.aladdin.geniebox.R
-import com.aladdin.geniebox.app.AppLanguage
-
 enum class PlatformType(
     val id: String,
-    private val displayNameRes: Int,
     val primaryExtension: String,
     val supportedExtensions: List<String>,
     val defaultCoreId: String,
@@ -14,7 +10,6 @@ enum class PlatformType(
 ) {
     NES(
         id = "nes",
-        displayNameRes = R.string.platform_nes,
         primaryExtension = ".nes",
         supportedExtensions = listOf("nes", "fds", "unf", "unif", "zip"),
         defaultCoreId = "fceumm",
@@ -23,7 +18,6 @@ enum class PlatformType(
     ),
     GB(
         id = "gb",
-        displayNameRes = R.string.platform_gb,
         primaryExtension = ".gb",
         supportedExtensions = listOf("gb", "gbc", "dmg", "zip"),
         defaultCoreId = "gambatte",
@@ -32,7 +26,6 @@ enum class PlatformType(
     ),
     GBA(
         id = "gba",
-        displayNameRes = R.string.platform_gba,
         primaryExtension = ".gba",
         supportedExtensions = listOf("gba", "agb", "bin", "zip"),
         defaultCoreId = "mgba",
@@ -41,7 +34,6 @@ enum class PlatformType(
     ),
     SFC(
         id = "sfc",
-        displayNameRes = R.string.platform_sfc,
         primaryExtension = ".sfc",
         supportedExtensions = listOf("sfc", "smc", "fig", "zip"),
         defaultCoreId = "snes9x",
@@ -50,7 +42,6 @@ enum class PlatformType(
     ),
     PS1(
         id = "ps1",
-        displayNameRes = R.string.platform_ps1,
         primaryExtension = ".cue",
         supportedExtensions = listOf("cue", "chd", "m3u", "pbp", "bin"),
         defaultCoreId = "pcsx_rearmed",
@@ -59,15 +50,12 @@ enum class PlatformType(
     ),
     PSP(
         id = "psp",
-        displayNameRes = R.string.platform_psp,
         primaryExtension = ".iso",
         supportedExtensions = listOf("iso", "cso", "pbp"),
         defaultCoreId = "ppsspp",
         supportsMultitap4 = false, // PSP 無線對戰不宣稱四人
         requiresBios = false
     );
-
-    val displayName: String get() = AppLanguage.text(displayNameRes)
 
     companion object {
         fun fromExtension(ext: String): PlatformType? {

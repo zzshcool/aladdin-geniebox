@@ -64,4 +64,9 @@
     <string name="polish_overwrite_warning">此槽位的即时存档将被当前进度替换，其他槽位不受影响。</string>
     <string name="polish_overwrite">覆盖存档</string>
     <string name="polish_restart_warning">游戏将重新启动，尚未保存的进度会丢失。确定重新开始？</string>
+    <string name="review_state_unavailable">核心不支持或无法创建即时存档。当前游戏仍保留，请重试，或确认不保存离开。</string>
+    <string name="review_import_bios">导入 PS1 BIOS</string>
+    <string name="review_bios_hint">自行准备 scph5500.bin、scph5501.bin 或 scph5502.bin（512 KiB），使用下方按钮导入。仅检查文件名与大小，不提供 BIOS 下载。</string>
+    <string name="review_bios_imported">BIOS 已导入，重新打开 PS1 游戏后生效。</string>
+    <string name="review_bios_failed">导入失败：请确认 BIOS 文件名、512 KiB 大小及可用存储空间。</string>
 </resources>

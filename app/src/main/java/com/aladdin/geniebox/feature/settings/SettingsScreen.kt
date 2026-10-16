@@ -4,6 +4,8 @@ import com.aladdin.geniebox.R
 import com.aladdin.geniebox.app.AppLanguage
 import android.content.Intent
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
+import com.aladdin.geniebox.emulator.CoreRegistry
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +33,9 @@ import com.aladdin.geniebox.input.RetroPadKey
 import com.aladdin.geniebox.ui.component.FocusableButton
 import com.aladdin.geniebox.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -55,6 +60,11 @@ fun SettingsScreen(
     val sections = listOf(R.string.ux_section_folders, R.string.ux_section_controls, R.string.ux_section_video, R.string.settings_language_appearance, R.string.ux_section_saves, R.string.ux_section_about)
 
     var actionMessage by remember { mutableStateOf("") }
+    var fileOperationRunning by remember { mutableStateOf(false) }
+    var ps1BiosReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        ps1BiosReady = withContext(Dispatchers.IO) { app.coreRegistry.checkPs1BiosAvailable() }
+    }
     var isScanning by remember { mutableStateOf(false) }
     var mappingPlayer by remember { mutableStateOf<Int?>(null) }
     var mappingTarget by remember { mutableStateOf<String?>(null) }
@@ -71,14 +81,21 @@ fun SettingsScreen(
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri: Uri? ->
-        if (uri != null) {
+        if (uri != null && !fileOperationRunning) {
+            fileOperationRunning = true
             coroutineScope.launch {
                 val success = try {
-                    context.contentResolver.openOutputStream(uri)?.use { os ->
-                        app.storageManager.exportBackup(os)
-                    } ?: false
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { os ->
+                            app.storageManager.exportBackup(os)
+                        } ?: false
+                    }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     false
+                } finally {
+                    fileOperationRunning = false
                 }
                 actionMessage = if (success) AppLanguage.text(R.string.ui_saves_and_states_exported_successfully) else AppLanguage.text(R.string.ui_export_failed_check_storage_access)
             }
@@ -88,16 +105,58 @@ fun SettingsScreen(
     val importBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        if (uri != null) {
+        if (uri != null && !fileOperationRunning) {
+            fileOperationRunning = true
             coroutineScope.launch {
                 val success = try {
-                    context.contentResolver.openInputStream(uri)?.use { `is` ->
-                        app.storageManager.importBackup(`is`)
-                    } ?: false
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { `is` ->
+                            app.storageManager.importBackup(`is`)
+                        } ?: false
+                    }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     false
+                } finally {
+                    fileOperationRunning = false
                 }
                 actionMessage = if (success) AppLanguage.text(R.string.ui_backup_restored_successfully) else AppLanguage.text(R.string.ui_import_failed_the_backup_may_be_damaged_or)
+            }
+        }
+    }
+
+    val importBiosLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && !fileOperationRunning) {
+            fileOperationRunning = true
+            coroutineScope.launch {
+                val success = try {
+                    withContext(Dispatchers.IO) {
+                        val name = DocumentFile.fromSingleUri(context, uri)?.name
+                        val acceptedName = app.coreRegistry.cores[PlatformType.PS1]?.biosFiles
+                            ?.firstOrNull { it.equals(name, ignoreCase = true) }
+                        if (acceptedName == null) return@withContext false
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+                            val data = ByteArray(CoreRegistry.PS1_BIOS_SIZE_BYTES)
+                            var count = 0
+                            while (count < data.size) {
+                                val read = input.read(data, count, data.size - count)
+                                if (read <= 0) return@use null
+                                count += read
+                            }
+                            if (input.read() != -1) null else data
+                        } ?: return@withContext false
+                        app.storageManager.atomicWrite(File(app.storageManager.systemDir, acceptedName), bytes)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                } finally {
+                    fileOperationRunning = false
+                }
+                ps1BiosReady = withContext(Dispatchers.IO) { app.coreRegistry.checkPs1BiosAvailable() }
+                actionMessage = AppLanguage.text(if (success) R.string.review_bios_imported else R.string.review_bios_failed)
             }
         }
     }
@@ -149,7 +208,6 @@ fun SettingsScreen(
     val offerResume by app.settingsRepository.autoResume.collectAsState(initial = true)
     val isTvDevice = remember { app.settingsRepository.isTvDevice() }
 
-    val ps1BiosReady = remember { app.coreRegistry.checkPs1BiosAvailable() }
 
     BackHandler {
         onNavigateBack()
@@ -464,9 +522,14 @@ fun SettingsScreen(
                             )
                         }
                         Text(
-                            AppLanguage.text(R.string.ui_place_your_bios_in_the_internal_system_folder),
+                            AppLanguage.text(R.string.review_bios_hint),
                             fontSize = 12.sp,
                             color = TextTertiary
+                        )
+                        FocusableButton(
+                            text = AppLanguage.text(R.string.review_import_bios),
+                            enabled = !fileOperationRunning,
+                            onClick = { importBiosLauncher.launch(arrayOf("*/*")) }
                         )
                     }
                 }
@@ -564,7 +627,7 @@ fun SettingsScreen(
                                 Tab(
                                     selected = platform == touchPlatform,
                                     onClick = { touchPlatformId = platform.id },
-                                    text = { Text(platform.displayName) }
+                                    text = { Text(AppLanguage.platformName(platform)) }
                                 )
                             }
                         }
@@ -621,6 +684,7 @@ fun SettingsScreen(
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             FocusableButton(
                                 text = AppLanguage.text(R.string.ui_export_save_backup),
+                                enabled = !fileOperationRunning,
                                 onClick = {
                                     val defaultName = "genie_backup_${System.currentTimeMillis()}.zip"
                                     exportBackupLauncher.launch(defaultName)
@@ -629,6 +693,7 @@ fun SettingsScreen(
 
                             FocusableButton(
                                 text = AppLanguage.text(R.string.ui_restore_zip_backup),
+                                enabled = !fileOperationRunning,
                                 onClick = {
                                     importBackupLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*"))
                                 }

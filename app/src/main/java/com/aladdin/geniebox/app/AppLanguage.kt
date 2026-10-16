@@ -3,6 +3,8 @@ package com.aladdin.geniebox.app
 import android.content.Context
 import android.content.res.Configuration
 import androidx.annotation.StringRes
+import com.aladdin.geniebox.R
+import com.aladdin.geniebox.domain.model.PlatformType
 import java.util.Locale
 
 object AppLanguage {
@@ -40,6 +42,15 @@ object AppLanguage {
     fun text(@StringRes id: Int, vararg args: Any?): String =
         if (args.isEmpty()) localizedContext.getString(id)
         else localizedContext.getString(id, *args)
+
+    fun platformName(platform: PlatformType): String = text(when (platform) {
+        PlatformType.NES -> R.string.platform_nes
+        PlatformType.GB -> R.string.platform_gb
+        PlatformType.GBA -> R.string.platform_gba
+        PlatformType.SFC -> R.string.platform_sfc
+        PlatformType.PS1 -> R.string.platform_ps1
+        PlatformType.PSP -> R.string.platform_psp
+    })
 
     fun selectAndRecreate(context: Context, tag: String) {
         if (selectedTag(context) == tag) return

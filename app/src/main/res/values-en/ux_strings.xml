@@ -64,4 +64,9 @@
     <string name="polish_overwrite_warning">The state in this slot will be replaced by your current progress. Other slots are unaffected.</string>
     <string name="polish_overwrite">Overwrite save</string>
     <string name="polish_restart_warning">The game will restart and unsaved progress will be lost. Restart now?</string>
+    <string name="review_state_unavailable">The core does not support save states or could not create one. Your game is still open. Retry or confirm leaving without saving.</string>
+    <string name="review_import_bios">Import PS1 BIOS</string>
+    <string name="review_bios_hint">Provide your own scph5500.bin, scph5501.bin or scph5502.bin (512 KiB) using the button below. Only the filename and size are checked. BIOS downloads are not provided.</string>
+    <string name="review_bios_imported">BIOS imported. Reopen the PS1 game to use it.</string>
+    <string name="review_bios_failed">Import failed. Check the BIOS filename, 512 KiB size and available storage.</string>
 </resources>

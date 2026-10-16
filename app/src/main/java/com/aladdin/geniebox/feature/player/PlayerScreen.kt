@@ -44,7 +44,6 @@ import com.aladdin.geniebox.app.GenieApplication
 import com.aladdin.geniebox.domain.model.EmulationSessionState
 import com.aladdin.geniebox.domain.model.Game
 import com.aladdin.geniebox.domain.model.PlatformType
-import com.aladdin.geniebox.domain.model.SaveMetadata
 import com.aladdin.geniebox.data.repository.SettingsRepository
 import com.aladdin.geniebox.ui.component.FocusableButton
 import com.aladdin.geniebox.ui.component.VirtualGamepadOverlay
@@ -67,10 +66,7 @@ fun PlayerScreen(
     val context = LocalContext.current
     var gameSurface by remember { mutableStateOf<SurfaceView?>(null) }
     val core = app.coreRegistry.cores[game.platform]
-    val saves by remember(game.id) { app.saveRepository.getSavesForGame(game.id) }.collectAsState(initial = emptyList())
-    val availableSaves by produceState<List<SaveMetadata>>(emptyList(), saves) {
-        value = withContext(Dispatchers.IO) { saves.filter { File(it.filePath).isFile } }
-    }
+    val availableSaves by remember(game.id) { app.saveRepository.getAvailableSavesForGame(game.id) }.collectAsState(initial = emptyList())
     val compatibleSaves = availableSaves.filter { it.coreId == core?.coreId && it.coreVersion == core?.version && it.formatVersion == 1 }
     val playbackSpeed by app.emulatorSession.playbackSpeed.collectAsState()
     val muteFastForward by app.emulatorSession.muteFastForward.collectAsState()
@@ -100,17 +96,20 @@ fun PlayerScreen(
     var showRestartConfirmation by remember { mutableStateOf(false) }
     var pauseStatusText by remember { mutableStateOf("") }
     var operationInProgress by remember { mutableStateOf(false) }
+    val checkpointSaving by app.emulatorSession.checkpointSaving.collectAsState()
+    val menuBusy = operationInProgress || checkpointSaving
     var allowDiscard by remember { mutableStateOf(false) }
     var showDiscardConfirmation by remember { mutableStateOf(false) }
     val resumeFocusRequester = remember { FocusRequester() }
     var totalDiscs by remember { mutableIntStateOf(0) }
     var currentDiscIndex by remember { mutableIntStateOf(0) }
 
-    suspend fun saveWithPreview(slot: Int, stop: Boolean): Boolean {
+    suspend fun saveWithPreview(slot: Int, stop: Boolean): Boolean = withContext(kotlinx.coroutines.NonCancellable) {
         app.emulatorSession.awaitPausedFrame()
         val previousPreview = availableSaves.firstOrNull { it.coreId == core?.coreId && it.slotIndex == slot }?.thumbnailPath
         val saveStartedAt = System.currentTimeMillis()
-        val preview = captureSavePreview(gameSurface, app.storageManager.getStateDir(core?.coreId ?: "unknown", game.id))
+        val previewDir = withContext(Dispatchers.IO) { app.storageManager.getStateDir(core?.coreId ?: "unknown", game.id) }
+        val preview = captureSavePreview(gameSurface, previewDir)
         var previewSaved = false
         try {
             val success = if (stop) {
@@ -126,7 +125,7 @@ fun PlayerScreen(
                 app.emulatorSession.saveManualState(slot, thumbnailPath = preview).also { previewSaved = it }
             }
             if (previewSaved && previousPreview != null) withContext(Dispatchers.IO) { File(previousPreview).delete() }
-            return success
+            success
         } finally {
             if (!previewSaved && preview != null) withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { File(preview).delete() }
         }
@@ -145,7 +144,7 @@ fun PlayerScreen(
 
 
     fun runMenuOperation(saving: Boolean = false, action: suspend () -> Unit) {
-        if (operationInProgress) return
+        if (menuBusy) return
         operationInProgress = true
         coroutineScope.launch {
             try {
@@ -181,12 +180,17 @@ fun PlayerScreen(
     }
 
     // 啟動遊戲
-    LaunchedEffect(game) {
+    LaunchedEffect(game.id) {
+        if (app.emulatorSession.pauseActiveGame(game.id)) {
+            showPauseMenu = true
+            app.inputManager.setMenuIntercept(true)
+            return@LaunchedEffect
+        }
         app.emulatorSession.setPlaybackSpeed(app.settingsRepository.gameSpeed(game.id).first())
         app.emulatorSession.setMuteFastForward(app.settingsRepository.muteFastForward.first())
-        val resumeSave = app.saveRepository.getSavesForGame(game.id).first().firstOrNull {
+        val resumeSave = app.saveRepository.getAvailableSavesForGame(game.id).first().firstOrNull {
             it.slotIndex == 0 && it.coreId == core?.coreId && it.coreVersion == core?.version &&
-                it.formatVersion == 1 && File(it.filePath).isFile
+                it.formatVersion == 1
         }
         if (app.settingsRepository.autoResume.first() && resumeSave != null) {
             resumeTimestamp = resumeSave.timestamp
@@ -194,6 +198,22 @@ fun PlayerScreen(
             app.inputManager.setMenuIntercept(true)
         } else {
             app.emulatorSession.startGame(game, autoLoadResumeState = false)
+        }
+    }
+
+    LaunchedEffect(sessionState) {
+        if (sessionState is EmulationSessionState.Paused) {
+            showPauseMenu = true
+            app.inputManager.setMenuIntercept(true)
+        }
+    }
+
+    LaunchedEffect(game.id) {
+        app.emulatorSession.checkpointError.collect { error ->
+            if (error != null) {
+                pauseStatusText = error
+                allowDiscard = true
+            }
         }
     }
 
@@ -211,7 +231,7 @@ fun PlayerScreen(
     // 返回鍵攔截：優先開啟暫停選單，避免直接退出
     BackHandler {
         if (showResumePrompt) return@BackHandler
-        if (operationInProgress || showDiscardConfirmation || showRestartConfirmation || pendingOverwriteSlot != null) return@BackHandler
+        if (menuBusy || showDiscardConfirmation || showRestartConfirmation || pendingOverwriteSlot != null) return@BackHandler
         if (showPauseMenu) {
             showPauseMenu = false
             app.inputManager.setMenuIntercept(false)
@@ -405,7 +425,7 @@ fun PlayerScreen(
                     text = AppLanguage.text(R.string.ui_resume_game),
                     modifier = Modifier.fillMaxWidth().focusRequester(resumeFocusRequester),
                     isPrimary = true,
-                    enabled = !operationInProgress,
+                    enabled = !menuBusy,
                     onClick = {
                         showPauseMenu = false
                         app.inputManager.setMenuIntercept(false)
@@ -415,7 +435,7 @@ fun PlayerScreen(
                 FocusableButton(
                     text = AppLanguage.text(R.string.ui_save_and_return_to_library),
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !operationInProgress,
+                    enabled = !menuBusy,
                     onClick = {
                         runMenuOperation(saving = true) {
                             val success = saveWithPreview(0, stop = true)
@@ -430,14 +450,14 @@ fun PlayerScreen(
                 FocusableButton(
                     text = AppLanguage.text(R.string.ui_restart),
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !operationInProgress,
+                    enabled = !menuBusy,
                     onClick = { showRestartConfirmation = true }
                 )
                 if (allowDiscard) {
                     FocusableButton(
                         text = AppLanguage.text(R.string.ui_leave_without_saving),
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !operationInProgress,
+                        enabled = !menuBusy,
                         onClick = { showDiscardConfirmation = true }
                     )
                 }
@@ -450,7 +470,7 @@ fun PlayerScreen(
                         FocusableButton(
                             text = "${speed.toString().removeSuffix(".0")}×",
                             isPrimary = playbackSpeed == speed,
-                            enabled = !operationInProgress,
+                            enabled = !menuBusy,
                             onClick = {
                                 runMenuOperation {
                                     app.settingsRepository.setGameSpeed(game.id, speed)
@@ -465,7 +485,7 @@ fun PlayerScreen(
                     Text(AppLanguage.text(R.string.play_mute_fast_forward), modifier = Modifier.weight(1f), color = TextPrimary)
                     Switch(
                         checked = muteFastForward,
-                        enabled = !operationInProgress,
+                        enabled = !menuBusy,
                         onCheckedChange = { enabled ->
                             runMenuOperation {
                                 app.settingsRepository.setMuteFastForward(enabled)
@@ -497,7 +517,7 @@ fun PlayerScreen(
                                     containerColor = if (selected) AladdinGold.copy(alpha = 0.12f) else CardDarkFocused,
                                     contentColor = TextPrimary),
                                 contentPadding = PaddingValues(12.dp),
-                                enabled = !operationInProgress,
+                                enabled = !menuBusy,
                                 onClick = { selectedSaveSlot = slot }
                             ) {
                                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -543,7 +563,7 @@ fun PlayerScreen(
                             FocusableButton(
                                 text = AppLanguage.text(R.string.ui_disc_value, disc + 1),
                                 isPrimary = disc == currentDiscIndex,
-                                enabled = !operationInProgress,
+                                enabled = !menuBusy,
                                 onClick = {
                                     runMenuOperation {
                                         val ok = app.emulatorSession.setDiskIndex(disc)
@@ -561,7 +581,7 @@ fun PlayerScreen(
                 FocusableButton(
                     text = AppLanguage.text(R.string.polish_save_short),
                     modifier = Modifier.weight(1f),
-                    enabled = !operationInProgress,
+                    enabled = !menuBusy,
                     onClick = {
                         if (selectedSave != null) pendingOverwriteSlot = selectedSaveSlot else saveSlot(selectedSaveSlot)
                     }
@@ -569,7 +589,7 @@ fun PlayerScreen(
                 FocusableButton(
                     text = AppLanguage.text(R.string.polish_load_short),
                     modifier = Modifier.weight(1f),
-                    enabled = !operationInProgress && selectedSave != null && selectedSave in compatibleSaves,
+                    enabled = !menuBusy && selectedSave != null && selectedSave in compatibleSaves,
                     onClick = {
                         runMenuOperation {
                             val ok = app.emulatorSession.loadManualState(selectedSaveSlot)
@@ -588,7 +608,7 @@ fun PlayerScreen(
             val detailActions: @Composable ColumnScope.() -> Unit = {
                 TabRow(selectedTabIndex = pauseSection, containerColor = CardDark, contentColor = AladdinGold) {
                     listOf(R.string.polish_saves, R.string.polish_speed_audio).forEachIndexed { index, label ->
-                        Tab(selected = pauseSection == index, enabled = !operationInProgress,
+                        Tab(selected = pauseSection == index, enabled = !menuBusy,
                             onClick = { pauseSection = index }, text = { Text(AppLanguage.text(label)) })
                     }
                 }
@@ -619,7 +639,7 @@ fun PlayerScreen(
                         color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis
                     )
-                    if (operationInProgress) {
+                    if (menuBusy) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Text(AppLanguage.text(R.string.ux_processing), color = TextSecondary, fontSize = 12.sp)
                     } else if (pauseStatusText.isNotEmpty()) {
@@ -678,11 +698,11 @@ fun PlayerScreen(
         }
         if (showDiscardConfirmation) {
             AlertDialog(
-                onDismissRequest = { if (!operationInProgress) showDiscardConfirmation = false },
+                onDismissRequest = { if (!menuBusy) showDiscardConfirmation = false },
                 title = { Text(AppLanguage.text(R.string.ui_leave_without_saving)) },
                 text = { Text(AppLanguage.text(R.string.ux_discard_warning)) },
                 confirmButton = {
-                    TextButton(enabled = !operationInProgress, onClick = {
+                    TextButton(enabled = !menuBusy, onClick = {
                         runMenuOperation {
                             val result = app.emulatorSession.stopGame(forceDiscard = true)
                             if (result.success) {
@@ -694,7 +714,7 @@ fun PlayerScreen(
                     }) { Text(AppLanguage.text(R.string.ux_confirm_leave)) }
                 },
                 dismissButton = {
-                    TextButton(enabled = !operationInProgress, onClick = { showDiscardConfirmation = false }) {
+                    TextButton(enabled = !menuBusy, onClick = { showDiscardConfirmation = false }) {
                         Text(AppLanguage.text(R.string.ux_cancel))
                     }
                 }
@@ -702,18 +722,18 @@ fun PlayerScreen(
         }
         if (showResumePrompt) {
             AlertDialog(
-                onDismissRequest = { if (!operationInProgress) onExitGame() },
+                onDismissRequest = { if (!menuBusy) onExitGame() },
                 title = { Text(AppLanguage.text(R.string.play_resume_title)) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(AppLanguage.text(R.string.play_resume_message,
                             DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(resumeTimestamp))))
-                        if (operationInProgress) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (menuBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         if (pauseStatusText.isNotEmpty()) Text(pauseStatusText, color = AccentRed)
                     }
                 },
                 confirmButton = {
-                    TextButton(enabled = !operationInProgress, onClick = {
+                    TextButton(enabled = !menuBusy, onClick = {
                         runMenuOperation {
                             app.emulatorSession.startGame(game, autoLoadResumeState = true)
                             showResumePrompt = false
@@ -723,14 +743,14 @@ fun PlayerScreen(
                 },
                 dismissButton = {
                     Column {
-                        TextButton(enabled = !operationInProgress, onClick = {
+                        TextButton(enabled = !menuBusy, onClick = {
                             runMenuOperation {
                                 app.emulatorSession.startGame(game, autoLoadResumeState = false)
                                 showResumePrompt = false
                                 app.inputManager.setMenuIntercept(false)
                             }
                         }) { Text(AppLanguage.text(R.string.ui_restart)) }
-                        TextButton(enabled = !operationInProgress, onClick = onExitGame) {
+                        TextButton(enabled = !menuBusy, onClick = onExitGame) {
                             Text(AppLanguage.text(R.string.ui_back_to_library))
                         }
                     }

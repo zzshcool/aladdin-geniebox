@@ -164,9 +164,10 @@ class StorageManager(private val context: Context) {
             backupFile.renameTo(targetFile)
         }
 
-        if (!targetFile.exists()) return null
+        val readableFile = (if (targetFile.isFile) targetFile else backupFile?.takeIf { it.isFile })
+            ?: return null
         return try {
-            FileInputStream(targetFile).use { it.readBytes() }
+            FileInputStream(readableFile).use { it.readBytes() }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read file ${targetFile.absolutePath}", e)
             // 若目標損壞嘗試讀取備份

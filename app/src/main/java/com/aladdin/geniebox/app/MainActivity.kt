@@ -10,10 +10,16 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import com.aladdin.geniebox.domain.model.Game
+import com.aladdin.geniebox.domain.model.EmulationSessionState
 import com.aladdin.geniebox.feature.library.LibraryScreen
 import com.aladdin.geniebox.feature.player.PlayerScreen
 import com.aladdin.geniebox.feature.settings.SettingsScreen
@@ -26,6 +32,7 @@ sealed class AppDestination {
     data object Library : AppDestination()
     data class Player(val game: Game) : AppDestination()
     data object Settings : AppDestination()
+    data object Restoring : AppDestination()
 }
 
 class MainActivity : ComponentActivity() {
@@ -52,7 +59,21 @@ class MainActivity : ComponentActivity() {
                 val sources by app.romSourceRepository.getAllSources().collectAsState(initial = emptyList())
                 var setupCompletedOrSkipped by rememberSaveable { mutableStateOf(false) }
                 var currentDestination by rememberSaveable { mutableStateOf<String>("DEFAULT") }
-                var activeGame by remember { mutableStateOf<Game?>(null) }
+                var activeGameId by rememberSaveable { mutableStateOf(app.emulatorSession.activeGame?.id) }
+                var activeGame by remember { mutableStateOf(app.emulatorSession.activeGame) }
+                LaunchedEffect(activeGameId) {
+                    val id = activeGameId
+                    if (id == null) {
+                        activeGame = null
+                    } else {
+                        activeGame = app.emulatorSession.activeGame?.takeIf { it.id == id }
+                            ?: app.gameRepository.getGameById(id)
+                        if (activeGame == null) {
+                            activeGameId = null
+                            currentDestination = "LIBRARY"
+                        }
+                    }
+                }
 
                 // 首次若無來源且未跳過，顯示 Setup；否則顯示 Library
                 val isSetupNeeded = sources.isEmpty() && !setupCompletedOrSkipped
@@ -61,13 +82,17 @@ class MainActivity : ComponentActivity() {
                     isSetupNeeded && currentDestination == "DEFAULT" -> AppDestination.Setup
                     currentDestination == "SETTINGS" -> AppDestination.Settings
                     currentDestination == "PLAYER" && activeGame != null -> AppDestination.Player(activeGame!!)
+                    currentDestination == "PLAYER" && activeGameId != null -> AppDestination.Restoring
                     else -> AppDestination.Library
                 }
 
                 // 同步輸入模式 (Finding 11)
                 LaunchedEffect(targetDestination) {
                     when (targetDestination) {
-                        is AppDestination.Player -> app.inputManager.setInputMode(InputMode.IN_GAME)
+                        is AppDestination.Player -> app.inputManager.setInputMode(
+                            if (app.emulatorSession.sessionState.value is EmulationSessionState.Paused)
+                                InputMode.PAUSE_MENU else InputMode.IN_GAME
+                        )
                         else -> app.inputManager.setInputMode(InputMode.UI_NAVIGATION)
                     }
                 }
@@ -86,6 +111,7 @@ class MainActivity : ComponentActivity() {
                         LibraryScreen(
                             onGameSelect = { game ->
                                 activeGame = game
+                                activeGameId = game.id
                                 currentDestination = "PLAYER"
                             },
                             onNavigateSettings = {
@@ -102,6 +128,7 @@ class MainActivity : ComponentActivity() {
                             game = targetDestination.game,
                             onExitGame = {
                                 activeGame = null
+                                activeGameId = null
                                 currentDestination = "LIBRARY"
                             }
                         )
@@ -113,6 +140,9 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
+                    is AppDestination.Restoring -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 }
             }
         }
@@ -120,6 +150,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        app.emulatorSession.enterForeground()
         hideSystemUi()
         // 回到前景時自動核對外接儲存設備狀態 (Finding 14)
         app.storageCoordinator.checkSourcesAvailability(autoScanNewSources = false)
@@ -128,7 +159,7 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         // 切到背景時自動暫停模擬與音訊，釋放手把按鍵 (Finding 10)
-        app.emulatorSession.pause()
+        app.emulatorSession.enterBackground()
         app.inputManager.releaseAllInputs()
     }
 

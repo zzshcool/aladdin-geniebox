@@ -8,6 +8,10 @@ import java.io.File
 
 class CoreRegistry(private val context: Context) {
 
+    companion object {
+        const val PS1_BIOS_SIZE_BYTES = 512 * 1024
+    }
+
     val cores: Map<PlatformType, CoreDescriptor> = mapOf(
         PlatformType.NES to CoreDescriptor(
             coreId = "fceumm",
@@ -149,10 +153,10 @@ class CoreRegistry(private val context: Context) {
     fun checkPs1BiosAvailable(): Boolean {
         val systemDir = File(context.filesDir, "system")
         if (!systemDir.exists()) return false
-        val files = systemDir.list() ?: return false
+        val files = systemDir.listFiles() ?: return false
         val ps1Desc = cores[PlatformType.PS1] ?: return false
         return ps1Desc.biosFiles.any { req ->
-            files.any { it.equals(req, ignoreCase = true) }
+            files.any { it.isFile && it.canRead() && it.length() == PS1_BIOS_SIZE_BYTES.toLong() && it.name.equals(req, ignoreCase = true) }
         }
     }
 }

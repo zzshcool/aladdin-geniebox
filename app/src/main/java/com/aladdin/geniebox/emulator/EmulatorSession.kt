@@ -25,6 +25,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -58,6 +59,10 @@ class EmulatorSession(
     val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
     private val _muteFastForward = MutableStateFlow(true)
     val muteFastForward: StateFlow<Boolean> = _muteFastForward.asStateFlow()
+    private val _checkpointError = MutableStateFlow<String?>(null)
+    val checkpointError: StateFlow<String?> = _checkpointError.asStateFlow()
+    private val _checkpointSaving = MutableStateFlow(false)
+    val checkpointSaving: StateFlow<Boolean> = _checkpointSaving.asStateFlow()
 
     fun setMuteFastForward(enabled: Boolean) {
         _muteFastForward.value = enabled
@@ -81,7 +86,40 @@ class EmulatorSession(
 
     @Volatile private var isRunning = false
     @Volatile private var isPaused = false
-    private var currentGame: Game? = null
+    @Volatile private var currentGame: Game? = null
+    @Volatile private var isForeground = true
+    val activeGame: Game? get() = currentGame
+
+    suspend fun pauseActiveGame(gameId: String): Boolean = sessionMutex.withLock {
+        if (!isRunning || currentGame?.id != gameId) return@withLock false
+        pause()
+        true
+    }
+
+    fun enterForeground() {
+        isForeground = true
+    }
+
+    fun enterBackground() {
+        isForeground = false
+        pause()
+        val gameId = currentGame?.id ?: return
+        if (_checkpointSaving.value) return
+        _checkpointSaving.value = true
+        coroutineScope.launch {
+            try {
+                sessionMutex.withLock {
+                    val game = currentGame ?: return@withLock
+                    if (!isRunning || game.id != gameId) return@withLock
+                    pause()
+                    val result = saveProgressInternal(game)
+                    _checkpointError.value = result.errorMessage
+                }
+            } finally {
+                _checkpointSaving.value = false
+            }
+        }
+    }
     private var stagedFile: File? = null
 
     init {
@@ -92,11 +130,16 @@ class EmulatorSession(
         )
     }
 
-    suspend fun startGame(game: Game, autoLoadResumeState: Boolean = false) = sessionMutex.withLock {
+    suspend fun startGame(game: Game, autoLoadResumeState: Boolean = false) =
+        coroutineScope.async { startGameInternal(game, autoLoadResumeState) }.await()
+
+    private suspend fun startGameInternal(game: Game, autoLoadResumeState: Boolean) = sessionMutex.withLock {
         if (isRunning) {
-            stopGameInternal(forceDiscard = true)
+            if (currentGame?.id == game.id) return@withLock
+            if (!stopGameInternal(forceDiscard = false).success) return@withLock
         }
 
+        _checkpointError.value = null
         currentGame = game
         _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_checking_the_core_and_device), 0.1f)
 
@@ -115,7 +158,7 @@ class EmulatorSession(
         if (coreFile == null || desc == null) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.MISSING_CORE,
-                message = AppLanguage.text(R.string.ui_missing_value_core_value_build_it_with_scripts, game.platform.displayName, desc?.soFileName ?: AppLanguage.text(R.string.ui_unknown))
+                message = AppLanguage.text(R.string.ui_missing_value_core_value_build_it_with_scripts, AppLanguage.platformName(game.platform), desc?.soFileName ?: AppLanguage.text(R.string.ui_unknown))
             )
             return@withLock
         }
@@ -298,11 +341,12 @@ class EmulatorSession(
 
         // 11. 正確的啟動順序：先設定狀態標記，再啟動非同步迴圈工作
         isRunning = true
-        isPaused = false
+        isPaused = !isForeground
         startAudioStream()
         startEmulationLoop(game)
 
-        _sessionState.value = EmulationSessionState.Running(game = game)
+        _sessionState.value = if (isPaused) EmulationSessionState.Paused(game)
+            else EmulationSessionState.Running(game = game)
     }
 
     private fun configureMultitapPorts(platform: PlatformType) {
@@ -360,13 +404,26 @@ class EmulatorSession(
 
         audioJob = coroutineScope.launch(Dispatchers.IO) {
             val audioBuffer = ShortArray(2048)
+            val outputBuffer = ShortArray(audioBuffer.size)
+            val history = DoubleArray(128)
+            var historyFrame = 0
+            var previousLeft = 0.0
+            var previousRight = 0.0
             var outputSuppressed = false
             var sourceFramePosition = 0.0
             var previousAudioSpeed = _playbackSpeed.value
+            var filter = fastForwardFilter(previousAudioSpeed)
             while (isActive && isRunning) {
                 val speed = _playbackSpeed.value
                 val suppressOutput = isPaused || (_muteFastForward.value && speed > 1f)
-                if (speed != previousAudioSpeed || suppressOutput) sourceFramePosition = 0.0
+                if (speed != previousAudioSpeed || suppressOutput != outputSuppressed) {
+                    sourceFramePosition = 0.0
+                    filter = fastForwardFilter(speed)
+                    history.fill(0.0)
+                    historyFrame = 0
+                    previousLeft = 0.0
+                    previousRight = 0.0
+                }
                 previousAudioSpeed = speed
                 if (suppressOutput != outputSuppressed) {
                     if (suppressOutput) {
@@ -377,25 +434,64 @@ class EmulatorSession(
                     }
                     outputSuppressed = suppressOutput
                 }
+                if (isPaused) {
+                    delay(20)
+                    continue
+                }
                 val readCount = nativeEmulator.nativeReadAudioSamples(audioBuffer)
                 if (readCount > 0 && !suppressOutput) {
-                    // Consume accelerated PCM at the game speed while keeping AudioTrack's
-                    // output sample rate fixed. Stereo pairs always stay together.
+                    if (speed == 1f) {
+                        audioTrack?.write(audioBuffer, 0, readCount)
+                        continue
+                    }
+                    // Low-pass before reducing the sample rate. Keep filter history and
+                    // fractional stereo interpolation continuous across native buffers.
                     val frameCount = readCount / 2
                     var outputSamples = 0
-                    while (sourceFramePosition < frameCount) {
-                        val sourceIndex = sourceFramePosition.toInt() * 2
-                        audioBuffer[outputSamples++] = audioBuffer[sourceIndex]
-                        audioBuffer[outputSamples++] = audioBuffer[sourceIndex + 1]
-                        sourceFramePosition += speed
+                    for (frame in 0 until frameCount) {
+                        history[historyFrame * 2] = audioBuffer[frame * 2].toDouble()
+                        history[historyFrame * 2 + 1] = audioBuffer[frame * 2 + 1].toDouble()
+                        var left = 0.0
+                        var right = 0.0
+                        for (tap in filter.indices) {
+                            val index = ((historyFrame - tap) and 63) * 2
+                            left += filter[tap] * history[index]
+                            right += filter[tap] * history[index + 1]
+                        }
+                        if (sourceFramePosition <= frame) {
+                            val fraction = sourceFramePosition - (frame - 1)
+                            outputBuffer[outputSamples++] = (previousLeft + (left - previousLeft) * fraction)
+                                .toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                            outputBuffer[outputSamples++] = (previousRight + (right - previousRight) * fraction)
+                                .toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                            sourceFramePosition += speed
+                        }
+                        previousLeft = left
+                        previousRight = right
+                        historyFrame = (historyFrame + 1) and 63
                     }
                     sourceFramePosition -= frameCount
-                    audioTrack?.write(audioBuffer, 0, outputSamples)
+                    audioTrack?.write(outputBuffer, 0, outputSamples)
                 } else {
                     delay(2)
                 }
             }
         }
+    }
+
+    private fun fastForwardFilter(speed: Float): DoubleArray {
+        val taps = 63
+        val cutoff = 0.45 / speed
+        val coefficients = DoubleArray(taps) { tap ->
+            val offset = tap - (taps - 1) / 2
+            val sinc = if (offset == 0) 2 * cutoff
+                else kotlin.math.sin(2 * Math.PI * cutoff * offset) / (Math.PI * offset)
+            val phase = 2 * Math.PI * tap / (taps - 1)
+            sinc * (0.42 - 0.5 * kotlin.math.cos(phase) + 0.08 * kotlin.math.cos(2 * phase))
+        }
+        val gain = coefficients.sum()
+        for (index in coefficients.indices) coefficients[index] /= gain
+        return coefficients
     }
 
     private fun startEmulationLoop(game: Game) {
@@ -437,12 +533,14 @@ class EmulatorSession(
                     lastFpsCalc = now
 
                     val underruns = nativeEmulator.nativeGetAudioUnderruns()
-                    _sessionState.value = EmulationSessionState.Running(
-                        game = game,
-                        fps = currentCalculatedFps,
-                        audioUnderruns = underruns,
-                        isPaused = false
-                    )
+                    _sessionState.update { state ->
+                        if (isPaused) state else EmulationSessionState.Running(
+                            game = game,
+                            fps = currentCalculatedFps,
+                            audioUnderruns = underruns,
+                            isPaused = false
+                        )
+                    }
                 }
 
                 val acceleratedPeriodNs = (framePeriodNs / speed).toLong()
@@ -465,7 +563,7 @@ class EmulatorSession(
     }
 
     fun resume() {
-        if (!isRunning || !isPaused) return
+        if (!isRunning || !isPaused || _checkpointSaving.value || !isForeground) return
         isPaused = false
         val g = currentGame ?: return
         _sessionState.value = EmulationSessionState.Running(g)
@@ -486,6 +584,7 @@ class EmulatorSession(
         val stateBytes = withContext(emulationDispatcher) {
             nativeEmulator.nativeSerializeState()
         } ?: return@withLock false
+        if (stateBytes.isEmpty()) return@withLock false
         val coreDesc = coreRegistry.cores[g.platform]
         saveRepository.saveState(
             gameId = g.id,
@@ -520,19 +619,56 @@ class EmulatorSession(
     }
 
     /**
-     * 安全停止遊戲。若存檔失敗且未強制放棄，維持暫停狀態，回報具體錯誤 (Finding 9, R2-06)
+     * 安全停止遊戲。forceDiscard=true 完全跳過保存；否則保存失敗時保持暫停並回報錯誤。
      */
-    suspend fun stopGame(forceDiscard: Boolean = false, thumbnailPath: String? = null): StopSessionResult = sessionMutex.withLock {
-        stopGameInternal(forceDiscard, thumbnailPath)
-    }
+    suspend fun stopGame(forceDiscard: Boolean = false, thumbnailPath: String? = null): StopSessionResult =
+        withContext(NonCancellable) {
+            sessionMutex.withLock { stopGameInternal(forceDiscard, thumbnailPath) }
+        }
 
     private suspend fun stopGameInternal(forceDiscard: Boolean, thumbnailPath: String? = null): StopSessionResult {
+        pause()
+        val g = currentGame
+        val saved = if (!forceDiscard && g != null && isRunning) {
+            saveProgressInternal(g, thumbnailPath)
+        } else StopSessionResult(success = true, sramSaved = false, stateSaved = false)
+        if (!saved.success) return saved
+
+        // 停止背景協程
+        isRunning = false
+        isPaused = false
+
+        emulationJob?.cancelAndJoin()
+        emulationJob = null
+
+        audioJob?.cancelAndJoin()
+        audioJob = null
+
+        try {
+            audioTrack?.stop()
+            audioTrack?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "AudioTrack release error", e)
+        }
+        audioTrack = null
+
+        withContext(emulationDispatcher) {
+            nativeEmulator.nativeUnloadGame()
+            nativeEmulator.nativeUnloadCore()
+        }
+
+        currentGame = null
+        _checkpointError.value = null
+        _sessionState.value = EmulationSessionState.Idle
+        return saved
+    }
+
+    private suspend fun saveProgressInternal(g: Game, thumbnailPath: String? = null): StopSessionResult {
         var sramSaved = true
-        var stateSaved = true
+        var stateSaved = false
         var errorMsg: String? = null
 
-        val g = currentGame
-        if (g != null && isRunning) {
+        try {
             // 1. 嘗試保存原生電池 SRAM (於專用 emulationDispatcher 執行 JNI)
             val sram = withContext(emulationDispatcher) {
                 nativeEmulator.nativeGetSramData()
@@ -560,54 +696,24 @@ class EmulatorSession(
                     thumbnailPath = thumbnailPath
                 )
                 if (!ok) {
-                    stateSaved = false
                     if (errorMsg == null) errorMsg = AppLanguage.text(R.string.ui_unable_to_write_the_automatic_save_state)
                 }
+                stateSaved = ok
+            } else {
+                errorMsg = AppLanguage.text(R.string.review_state_unavailable)
             }
-
-            // 如果保存失敗且未強制放棄，維持暫停狀態，不銷毀核心進度
-            if ((!sramSaved || !stateSaved) && !forceDiscard) {
-                isPaused = true
-                _sessionState.value = EmulationSessionState.Paused(g)
-                return StopSessionResult(
-                    success = false,
-                    sramSaved = sramSaved,
-                    stateSaved = stateSaved,
-                    errorMessage = errorMsg
-                )
-            }
-        }
-
-        // 停止背景協程
-        isRunning = false
-        isPaused = false
-
-        emulationJob?.cancelAndJoin()
-        emulationJob = null
-
-        audioJob?.cancelAndJoin()
-        audioJob = null
-
-        try {
-            audioTrack?.stop()
-            audioTrack?.release()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "AudioTrack release error", e)
+            Log.e(TAG, "Unable to save progress", e)
+            return StopSessionResult(false, sramSaved, stateSaved,
+                AppLanguage.text(R.string.ux_action_failed, e.localizedMessage ?: ""))
         }
-        audioTrack = null
-
-        withContext(emulationDispatcher) {
-            nativeEmulator.nativeUnloadGame()
-            nativeEmulator.nativeUnloadCore()
-        }
-
-        currentGame = null
-        _sessionState.value = EmulationSessionState.Idle
-
         return StopSessionResult(
-            success = true,
+            success = sramSaved && stateSaved,
             sramSaved = sramSaved,
-            stateSaved = stateSaved
+            stateSaved = stateSaved,
+            errorMessage = errorMsg
         )
     }
 
