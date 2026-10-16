@@ -1,5 +1,7 @@
 package com.aladdin.geniebox.feature.settings
 
+import com.aladdin.geniebox.R
+import com.aladdin.geniebox.app.AppLanguage
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -7,35 +9,64 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aladdin.geniebox.app.GenieApplication
 import com.aladdin.geniebox.domain.model.PlatformType
+import com.aladdin.geniebox.input.RetroPadKey
 import com.aladdin.geniebox.ui.component.FocusableButton
 import com.aladdin.geniebox.ui.theme.*
 import kotlinx.coroutines.launch
 import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit
 ) {
     val app = GenieApplication.instance
     val context = LocalContext.current
+    val currentLanguage = remember { AppLanguage.selectedTag(context) }
+    val themeMode by app.settingsRepository.themeMode.collectAsState(initial = 0)
     val coroutineScope = rememberCoroutineScope()
+
+    var selectedSection by rememberSaveable { mutableIntStateOf(0) }
+    var touchPlatformId by rememberSaveable { mutableStateOf(PlatformType.SFC.id) }
+    val touchPlatform = PlatformType.fromId(touchPlatformId) ?: PlatformType.SFC
+    val touchOpacity by remember(touchPlatform) { app.settingsRepository.touchOpacity(touchPlatform) }.collectAsState(initial = 0.65f)
+    val touchScale by remember(touchPlatform) { app.settingsRepository.touchScale(touchPlatform) }.collectAsState(initial = 1f)
+    val touchEdge by remember(touchPlatform) { app.settingsRepository.touchEdgeInset(touchPlatform) }.collectAsState(initial = 8f)
+    val touchBottom by remember(touchPlatform) { app.settingsRepository.touchBottomInset(touchPlatform) }.collectAsState(initial = 12f)
+    val touchVibration by remember(touchPlatform) { app.settingsRepository.touchVibration(touchPlatform) }.collectAsState(initial = true)
+    val sections = listOf(R.string.ux_section_folders, R.string.ux_section_controls, R.string.ux_section_video, R.string.settings_language_appearance, R.string.ux_section_saves, R.string.ux_section_about)
 
     var actionMessage by remember { mutableStateOf("") }
     var isScanning by remember { mutableStateOf(false) }
+    var mappingPlayer by remember { mutableStateOf<Int?>(null) }
+    var mappingTarget by remember { mutableStateOf<String?>(null) }
+    var mappingRevision by remember { mutableIntStateOf(0) }
+    val mappingButtons = listOf(
+        RetroPadKey.A to "A", RetroPadKey.B to "B", RetroPadKey.X to "X", RetroPadKey.Y to "Y",
+        RetroPadKey.L to "L", RetroPadKey.R to "R", RetroPadKey.L2 to "L2", RetroPadKey.R2 to "R2",
+        RetroPadKey.L3 to "L3", RetroPadKey.R3 to "R3", RetroPadKey.SELECT to "SELECT", RetroPadKey.START to "START"
+    )
+    DisposableEffect(Unit) {
+        onDispose { app.inputManager.cancelButtonMapping() }
+    }
 
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
@@ -49,7 +80,7 @@ fun SettingsScreen(
                 } catch (e: Exception) {
                     false
                 }
-                actionMessage = if (success) "存檔與即時進度已成功匯出至指定儲存空間！" else "匯出存檔失敗，請確認儲存空間權限。"
+                actionMessage = if (success) AppLanguage.text(R.string.ui_saves_and_states_exported_successfully) else AppLanguage.text(R.string.ui_export_failed_check_storage_access)
             }
         }
     }
@@ -66,7 +97,7 @@ fun SettingsScreen(
                 } catch (e: Exception) {
                     false
                 }
-                actionMessage = if (success) "存檔還原成功！" else "匯入存檔失敗，備份檔可能損毀或格式不合。"
+                actionMessage = if (success) AppLanguage.text(R.string.ui_backup_restored_successfully) else AppLanguage.text(R.string.ui_import_failed_the_backup_may_be_damaged_or)
             }
         }
     }
@@ -85,9 +116,9 @@ fun SettingsScreen(
                     // 若系統無法取得持久化權限，仍嘗試註冊當次來源
                 }
                 val sourceId = uri.lastPathSegment?.replace(":", "_") ?: "rom_source"
-                val displayName = "遊戲儲存 ($sourceId)"
+                val displayName = AppLanguage.text(R.string.ui_game_storage_value_62, sourceId)
                 app.romSourceRepository.registerSource(sourceId, displayName, uri.toString())
-                actionMessage = "已成功加入遊戲目錄：$displayName，正在背景掃描中…"
+                actionMessage = AppLanguage.text(R.string.ui_added_value_scanning_your_games, displayName)
                 isScanning = true
                 var scanError: String? = null
                 try {
@@ -95,12 +126,12 @@ fun SettingsScreen(
                         if (prog.isFinished && prog.error != null) {
                             scanError = prog.error
                         }
-                        actionMessage = prog.error ?: "掃描中：${prog.scannedCount} 款遊戲"
+                        actionMessage = prog.error ?: AppLanguage.text(R.string.ui_scanning_value_games, prog.scannedCount)
                     }
-                    actionMessage = scanError?.let { "掃描失敗：$it" }
-                        ?: "掃描完成，共 $count 款遊戲！"
+                    actionMessage = scanError?.let { AppLanguage.text(R.string.ui_scan_failed_value, it) }
+                        ?: AppLanguage.text(R.string.ui_scan_complete_value_games_found, count)
                 } catch (e: Exception) {
-                    actionMessage = "掃描失敗：${e.message}"
+                    actionMessage = AppLanguage.text(R.string.ui_scan_failed_value, e.message)
                 } finally {
                     isScanning = false
                 }
@@ -115,6 +146,7 @@ fun SettingsScreen(
     val currentBilinear by app.settingsRepository.bilinearFilter.collectAsState(initial = false)
     val showFpsHud by app.settingsRepository.showFpsHud.collectAsState(initial = false)
     val virtualGamepadMode by app.settingsRepository.virtualGamepadMode.collectAsState(initial = 0)
+    val offerResume by app.settingsRepository.autoResume.collectAsState(initial = true)
     val isTvDevice = remember { app.settingsRepository.isTvDevice() }
 
     val ps1BiosReady = remember { app.coreRegistry.checkPs1BiosAvailable() }
@@ -123,9 +155,57 @@ fun SettingsScreen(
         onNavigateBack()
     }
 
+    if (mappingPlayer != null) {
+        val player = mappingPlayer!!
+        fun closeMapping() {
+            app.inputManager.cancelButtonMapping()
+            mappingTarget = null
+            mappingPlayer = null
+        }
+        AlertDialog(
+            onDismissRequest = { closeMapping() },
+            title = { Text(AppLanguage.text(R.string.play_mapping_title, player)) },
+            text = {
+                Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(AppLanguage.text(R.string.play_mapping_hint), color = TextSecondary)
+                    mappingTarget?.let { Text(AppLanguage.text(R.string.play_mapping_press, it), color = AladdinGold) }
+                    mappingButtons.forEach { (key, label) ->
+                        val physical = remember(player, key, mappingRevision) { app.inputManager.mappedButtonName(player, key) }
+                        FocusableButton(
+                            text = "$label · $physical",
+                            modifier = Modifier.fillMaxWidth(),
+                            isPrimary = mappingTarget == label,
+                            enabled = mappingTarget == null,
+                            onClick = {
+                                mappingTarget = label
+                                app.inputManager.beginButtonMapping(player, key) {
+                                    mappingTarget = null
+                                    mappingRevision++
+                                }
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { closeMapping() }) { Text(AppLanguage.text(R.string.play_mapping_done)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    app.inputManager.cancelButtonMapping()
+                    app.inputManager.resetButtonMapping(player)
+                    mappingTarget = null
+                    mappingRevision++
+                }) { Text(AppLanguage.text(R.string.play_mapping_reset)) }
+            }
+        )
+    }
+
     Scaffold(
         containerColor = BgDark,
         topBar = {
+            Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -135,15 +215,29 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "設定與系統管理",
+                    text = AppLanguage.text(R.string.ui_settings_67),
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     color = AladdinGold
                 )
                 FocusableButton(
-                    text = "返回遊戲庫",
+                    text = AppLanguage.text(R.string.ui_back_to_library),
                     onClick = onNavigateBack
                 )
+            }
+                ScrollableTabRow(
+                    selectedTabIndex = selectedSection,
+                    containerColor = BgDark,
+                    edgePadding = 0.dp
+                ) {
+                    sections.forEachIndexed { section, label ->
+                        Tab(
+                            selected = selectedSection == section,
+                            onClick = { selectedSection = section },
+                            text = { Text(AppLanguage.text(label)) }
+                        )
+                    }
+                }
             }
         }
     ) { innerPadding ->
@@ -168,21 +262,67 @@ fun SettingsScreen(
             }
 
             // 1. 手把與多玩家 (P1–P4) 管理
-            item {
+            if (selectedSection == 3) item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = CardDark)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(AppLanguage.text(R.string.settings_language_appearance),
+                            fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text(AppLanguage.text(R.string.settings_language), color = TextSecondary)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FocusableButton(
+                                text = AppLanguage.text(R.string.language_chinese),
+                                isPrimary = currentLanguage == AppLanguage.CHINESE,
+                                onClick = { AppLanguage.selectAndRecreate(context, AppLanguage.CHINESE) }
+                            )
+                            FocusableButton(
+                                text = AppLanguage.text(R.string.language_simplified_chinese),
+                                isPrimary = currentLanguage == AppLanguage.SIMPLIFIED_CHINESE,
+                                onClick = { AppLanguage.selectAndRecreate(context, AppLanguage.SIMPLIFIED_CHINESE) }
+                            )
+                            FocusableButton(
+                                text = AppLanguage.text(R.string.language_english),
+                                isPrimary = currentLanguage == AppLanguage.ENGLISH,
+                                onClick = { AppLanguage.selectAndRecreate(context, AppLanguage.ENGLISH) }
+                            )
+                        }
+                        Text(AppLanguage.text(R.string.settings_theme), color = TextSecondary)
+                        listOf(R.string.theme_system, R.string.theme_light, R.string.theme_dark)
+                            .forEachIndexed { mode, label ->
+                                FocusableButton(
+                                    text = AppLanguage.text(label),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    isPrimary = themeMode == mode,
+                                    onClick = {
+                                        coroutineScope.launch { app.settingsRepository.setThemeMode(mode) }
+                                    }
+                                )
+                            }
+                    }
+                }
+            }
+
+            if (selectedSection == 1) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("控制器指派 (P1–P4)", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_controller_assignment_p1_p4), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
                         Text(
-                            "支援 USB Hub 四手把、四藍牙手把或混用。按手把任意鍵可自動綁定至空槽位。",
+                            AppLanguage.text(R.string.ui_connect_usb_bluetooth_or_receiver_based_controllers_press),
                             fontSize = 13.sp,
                             color = TextSecondary
                         )
 
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        FlowRow(modifier = Modifier.fillMaxWidth(), maxItemsInEachRow = if (isTvDevice) 4 else 2,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             playerProfiles.forEach { p ->
                                 Box(
                                     modifier = Modifier
@@ -191,19 +331,29 @@ fun SettingsScreen(
                                         .padding(12.dp)
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text("玩家 ${p.playerId}", fontWeight = FontWeight.Bold, color = if (p.isConnected) AccentGreen else TextTertiary)
-                                        Text(p.deviceName, fontSize = 12.sp, color = TextPrimary, maxLines = 1)
-                                        Text(if (p.isConnected) "已連線" else "未偵測到手把", fontSize = 11.sp, color = TextSecondary)
+                                        Text(AppLanguage.text(R.string.ui_player_value, p.playerId), fontWeight = FontWeight.Bold, color = if (p.isConnected) AccentGreen else TextTertiary)
+                                        Text(
+                                            text = p.deviceName.ifBlank {
+                                                AppLanguage.text(if (p.isConnected) R.string.ui_game_controller else R.string.ui_unassigned)
+                                            },
+                                            fontSize = 12.sp, color = TextPrimary, maxLines = 1
+                                        )
+                                        Text(if (p.isConnected) AppLanguage.text(R.string.ui_connected) else AppLanguage.text(R.string.ui_no_controller_detected), fontSize = 11.sp, color = TextSecondary)
+                                        FocusableButton(
+                                            text = AppLanguage.text(R.string.play_button_mapping),
+                                            enabled = p.isConnected,
+                                            onClick = { mappingPlayer = p.playerId }
+                                        )
                                     }
                                 }
                             }
                         }
 
                         FocusableButton(
-                            text = "重新偵測並整理控制器",
+                            text = AppLanguage.text(R.string.ui_rescan_controllers),
                             onClick = {
                                 app.inputManager.refreshConnectedDevices()
-                                actionMessage = "已重新掃描系統輸入裝置。"
+                                actionMessage = AppLanguage.text(R.string.ui_input_devices_rescanned)
                             }
                         )
                     }
@@ -211,29 +361,29 @@ fun SettingsScreen(
             }
 
             // 2. 遊戲 ROM 目錄來源管理 (支援手機內部儲存 / USB 隨身碟)
-            item {
+            if (selectedSection == 0) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("遊戲 ROM 目錄來源", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_game_folders), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
                         Text(
-                            "支援 USB 隨身碟、SD 卡以及手機本機儲存空間。請選取包含各主機遊戲的根目錄（例如 GenieROMs/ 或含有 nes、gba、gb、sfc、ps1、psp 之資料夾）。",
+                            AppLanguage.text(R.string.ui_choose_a_game_folder_on_your_phone_usb_76),
                             fontSize = 13.sp,
                             color = TextSecondary
                         )
 
                         FocusableButton(
-                            text = "+ 新增遊戲資料夾 (手機內部儲存 / USB 隨身碟)",
+                            text = AppLanguage.text(R.string.ui_add_game_folder_phone_usb_drive),
                             onClick = {
                                 addSourceLauncher.launch(null)
                             }
                         )
 
                         if (sources.isEmpty()) {
-                            Text("目前尚未加入任何來源目錄。請點擊上方按鈕授權選取遊戲資料夾。", color = TextTertiary, fontSize = 13.sp)
+                            Text(AppLanguage.text(R.string.ui_no_game_folders_yet_use_the_button_above), color = TextTertiary, fontSize = 13.sp)
                         } else {
                             sources.forEach { src ->
                                 Row(
@@ -246,29 +396,29 @@ fun SettingsScreen(
                                 ) {
                                     Column {
                                         Text(src.displayName, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                                        Text(if (src.isConnected) "狀態：在線" else "狀態：已拔除 (離線)", fontSize = 12.sp, color = if (src.isConnected) AccentGreen else AccentRed)
+                                        Text(if (src.isConnected) AppLanguage.text(R.string.ui_status_online) else AppLanguage.text(R.string.ui_status_disconnected), fontSize = 12.sp, color = if (src.isConnected) AccentGreen else AccentRed)
                                     }
 
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         FocusableButton(
-                                            text = if (isScanning) "掃描中…" else "重新掃描",
+                                            text = if (isScanning) AppLanguage.text(R.string.ui_scanning) else AppLanguage.text(R.string.ui_rescan),
                                             onClick = {
                                                 if (!isScanning) {
                                                     isScanning = true
                                                     coroutineScope.launch {
-                                                        actionMessage = "開始掃描 ${src.displayName}…"
+                                                        actionMessage = AppLanguage.text(R.string.ui_scanning_value, src.displayName)
                                                         var scanError: String? = null
                                                         try {
                                                             val count = app.romScanner.scanSource(src.id, Uri.parse(src.treeUri)) { prog ->
                                                                 if (prog.isFinished && prog.error != null) {
                                                                     scanError = prog.error
                                                                 }
-                                                                actionMessage = prog.error ?: "已找到 ${prog.scannedCount} 款遊戲"
+                                                                actionMessage = prog.error ?: AppLanguage.text(R.string.ui_value_games_found, prog.scannedCount)
                                                             }
-                                                            actionMessage = scanError?.let { "掃描失敗：$it" }
-                                                                ?: "掃描完成，共 $count 款遊戲！"
+                                                            actionMessage = scanError?.let { AppLanguage.text(R.string.ui_scan_failed_value, it) }
+                                                                ?: AppLanguage.text(R.string.ui_scan_complete_value_games_found, count)
                                                         } catch (e: Exception) {
-                                                            actionMessage = "掃描失敗：${e.message}"
+                                                            actionMessage = AppLanguage.text(R.string.ui_scan_failed_value, e.message)
                                                         } finally {
                                                             isScanning = false
                                                         }
@@ -278,11 +428,11 @@ fun SettingsScreen(
                                         )
 
                                         FocusableButton(
-                                            text = "移除來源",
+                                            text = AppLanguage.text(R.string.ui_remove_folder),
                                             onClick = {
                                                 coroutineScope.launch {
                                                     app.romSourceRepository.removeSource(src.id)
-                                                    actionMessage = "已移除來源 ${src.displayName}。"
+                                                    actionMessage = AppLanguage.text(R.string.ui_removed_value, src.displayName)
                                                 }
                                             }
                                         )
@@ -295,26 +445,26 @@ fun SettingsScreen(
             }
 
             // 3. PS1 BIOS 與核心支援狀態
-            item {
+            if (selectedSection == 0) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("BIOS 與模擬核心狀態", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_bios_and_emulator_cores), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("PS1 BIOS：", color = TextSecondary, fontSize = 14.sp)
                             Text(
-                                text = if (ps1BiosReady) "已就緒 (使用真實 BIOS)" else "缺少真實 BIOS (目前降級使用 HLE 模擬)",
+                                text = if (ps1BiosReady) AppLanguage.text(R.string.ui_ready_original_bios) else AppLanguage.text(R.string.ui_original_bios_missing_using_hle_fallback),
                                 color = if (ps1BiosReady) AccentGreen else AccentRed,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp
                             )
                         }
                         Text(
-                            "真實 BIOS 請放置於內部 system/ 資料夾 (支援 scph5501.bin, scph5500.bin, scph5502.bin)。",
+                            AppLanguage.text(R.string.ui_place_your_bios_in_the_internal_system_folder),
                             fontSize = 12.sp,
                             color = TextTertiary
                         )
@@ -323,18 +473,18 @@ fun SettingsScreen(
             }
 
             // 4. 影音與視訊渲染設定
-            item {
+            if (selectedSection == 2) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("視訊與彩現設定", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_video_and_rendering), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
 
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("畫面比例：", color = TextSecondary, fontSize = 14.sp)
-                            val modes = listOf("原始比例 (預設)", "整數縮放", "全螢幕拉伸")
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(AppLanguage.text(R.string.ui_aspect_ratio), color = TextSecondary, fontSize = 14.sp)
+                            val modes = listOf(AppLanguage.text(R.string.ui_original_default), AppLanguage.text(R.string.ui_integer_scaling), AppLanguage.text(R.string.ui_stretch_to_screen))
                             modes.forEachIndexed { idx, label ->
                                 FocusableButton(
                                     text = label,
@@ -349,10 +499,10 @@ fun SettingsScreen(
                             }
                         }
 
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("平滑濾鏡：", color = TextSecondary, fontSize = 14.sp)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(AppLanguage.text(R.string.ui_smoothing), color = TextSecondary, fontSize = 14.sp)
                             FocusableButton(
-                                text = if (currentBilinear) "雙線性平滑 (開)" else "最近鄰原始像素 (關)",
+                                text = if (currentBilinear) AppLanguage.text(R.string.ui_bilinear_smoothing_on) else AppLanguage.text(R.string.ui_nearest_neighbor_pixels_off),
                                 isPrimary = currentBilinear,
                                 onClick = {
                                     coroutineScope.launch {
@@ -364,7 +514,7 @@ fun SettingsScreen(
                             )
 
                             FocusableButton(
-                                text = if (showFpsHud) "FPS HUD (顯示)" else "FPS HUD (隱藏)",
+                                text = if (showFpsHud) AppLanguage.text(R.string.ui_show_fps_hud) else AppLanguage.text(R.string.ui_hide_fps_hud),
                                 isPrimary = showFpsHud,
                                 onClick = {
                                     coroutineScope.launch {
@@ -378,24 +528,24 @@ fun SettingsScreen(
             }
 
             // 5. 觸控虛擬手把與裝置模式
-            item {
+            if (selectedSection == 1) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("觸控虛擬手把與裝置適配", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_touch_controls_and_device_mode), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
                         Text(
-                            "目前系統偵測模式：${if (isTvDevice) "電視盒 / Android TV (大螢幕遙控)" else "手機 / 平板 (支援觸控螢幕)"}",
+                            AppLanguage.text(R.string.ui_detected_device_value, if (isTvDevice) AppLanguage.text(R.string.ui_tv_android_tv) else AppLanguage.text(R.string.ui_phone_tablet)),
                             fontSize = 13.sp,
                             color = if (isTvDevice) AladdinGold else AccentGreen,
                             fontWeight = FontWeight.SemiBold
                         )
 
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("虛擬手把顯示：", color = TextSecondary, fontSize = 14.sp)
-                            val gamepadModes = listOf("自動 (TV隱藏/手機智慧)", "強制顯示", "強制隱藏")
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(AppLanguage.text(R.string.ui_touch_controls), color = TextSecondary, fontSize = 14.sp)
+                            val gamepadModes = listOf(AppLanguage.text(R.string.ui_auto_hidden_on_tv), AppLanguage.text(R.string.ui_always_show), AppLanguage.text(R.string.ui_always_hide))
                             gamepadModes.forEachIndexed { idx, label ->
                                 FocusableButton(
                                     text = label,
@@ -408,28 +558,69 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        Text(AppLanguage.text(R.string.ux_platform_controls), color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                        ScrollableTabRow(selectedTabIndex = touchPlatform.ordinal, containerColor = CardDark, edgePadding = 0.dp) {
+                            PlatformType.entries.forEach { platform ->
+                                Tab(
+                                    selected = platform == touchPlatform,
+                                    onClick = { touchPlatformId = platform.id },
+                                    text = { Text(platform.displayName) }
+                                )
+                            }
+                        }
+                        TouchControlSlider(AppLanguage.text(R.string.ux_control_opacity), touchOpacity, 0.2f..1f, multiplier = 100f, unit = "%") {
+                            coroutineScope.launch { app.settingsRepository.setTouchOpacity(touchPlatform, it) }
+                        }
+                        TouchControlSlider(AppLanguage.text(R.string.ux_control_scale), touchScale, 0.75f..1.4f, multiplier = 100f, unit = "%") {
+                            coroutineScope.launch { app.settingsRepository.setTouchScale(touchPlatform, it) }
+                        }
+                        TouchControlSlider(AppLanguage.text(R.string.ux_control_edge), touchEdge, 0f..64f, unit = "dp") {
+                            coroutineScope.launch { app.settingsRepository.setTouchPosition(touchPlatform, it, touchBottom) }
+                        }
+                        TouchControlSlider(AppLanguage.text(R.string.ux_control_bottom), touchBottom, 0f..72f, unit = "dp") {
+                            coroutineScope.launch { app.settingsRepository.setTouchPosition(touchPlatform, touchEdge, it) }
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(AppLanguage.text(R.string.ux_control_vibration), color = TextPrimary)
+                            Switch(checked = touchVibration, onCheckedChange = {
+                                coroutineScope.launch { app.settingsRepository.setTouchVibration(touchPlatform, it) }
+                            })
+                        }
+                        Text(AppLanguage.text(R.string.ux_control_safe_area), fontSize = 12.sp, color = TextSecondary)
+                        FocusableButton(
+                            text = AppLanguage.text(R.string.ux_reset_controls),
+                            onClick = { coroutineScope.launch { app.settingsRepository.resetTouchControls(touchPlatform) } }
+                        )
                     }
                 }
             }
 
             // 6. 存檔與備份管理
-            item {
+            if (selectedSection == 4) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("存檔與資料安全", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_saves_and_backups), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(AppLanguage.text(R.string.play_offer_resume), modifier = Modifier.weight(1f), color = TextPrimary)
+                            Switch(checked = offerResume, onCheckedChange = { enabled ->
+                                coroutineScope.launch { app.settingsRepository.setAutoResume(enabled) }
+                            })
+                        }
+                        Text(AppLanguage.text(R.string.play_auto_save_hint), color = TextSecondary, fontSize = 12.sp)
                         Text(
-                            "所有遊戲原生 SRAM 與即時存檔皆保存在內部安全存儲空間，不受隨身碟插拔影響。",
+                            AppLanguage.text(R.string.ui_game_saves_and_save_states_stay_in_internal),
                             fontSize = 13.sp,
                             color = TextSecondary
                         )
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             FocusableButton(
-                                text = "匯出存檔備份 (SAF)",
+                                text = AppLanguage.text(R.string.ui_export_save_backup),
                                 onClick = {
                                     val defaultName = "genie_backup_${System.currentTimeMillis()}.zip"
                                     exportBackupLauncher.launch(defaultName)
@@ -437,17 +628,17 @@ fun SettingsScreen(
                             )
 
                             FocusableButton(
-                                text = "匯入還原備份 (Zip)",
+                                text = AppLanguage.text(R.string.ui_restore_zip_backup),
                                 onClick = {
                                     importBackupLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*"))
                                 }
                             )
 
                             FocusableButton(
-                                text = "清理 ROM 快取",
+                                text = AppLanguage.text(R.string.ui_clear_rom_cache),
                                 onClick = {
                                     val bytes = app.storageManager.clearRomStagingCache()
-                                    actionMessage = "已釋放快取空間：${bytes / (1024 * 1024)} MB。"
+                                    actionMessage = AppLanguage.text(R.string.ui_freed_value_mb_of_cache, bytes / (1024 * 1024))
                                 }
                             )
                         }
@@ -456,21 +647,44 @@ fun SettingsScreen(
             }
 
             // 6. 關於與版權宣告
-            item {
+            if (selectedSection == 5) item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = CardDark),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("關於 阿拉丁 GenieBox", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
-                        Text("主專案授權：GNU General Public License v3.0 (GPL-3.0)", fontSize = 13.sp, color = TextPrimary)
-                        Text("支援核心：FCEUmm (GPL-2.0)、Gambatte (GPL-2.0)、mGBA (MPL-2.0)、Snes9x (Non-commercial)、PCSX ReARMed (GPL-2.0)、PPSSPP (GPL-2.0)", fontSize = 12.sp, color = TextTertiary)
-                        Text("本軟體離線執行，無網路遙測、無廣告，不內建任何未授權商業 ROM 或 BIOS。", fontSize = 12.sp, color = TextTertiary)
+                        Text(AppLanguage.text(R.string.ui_about_aladdin_geniebox), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AladdinGold)
+                        Text(AppLanguage.text(R.string.ui_project_license_gnu_general_public_license_v3_0), fontSize = 13.sp, color = TextPrimary)
+                        Text(AppLanguage.text(R.string.ui_emulator_cores_fceumm_gpl_2_0_gambatte_gpl), fontSize = 12.sp, color = TextTertiary)
+                        Text(AppLanguage.text(R.string.ui_works_offline_with_no_ads_or_telemetry_no), fontSize = 12.sp, color = TextTertiary)
                     }
                 }
                 Spacer(modifier = Modifier.height(32.dp))
             }
         }
+    }
+}
+
+
+@Composable
+private fun TouchControlSlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    multiplier: Float = 1f,
+    unit: String,
+    onCommit: (Float) -> Unit
+) {
+    var draft by remember(value) { mutableFloatStateOf(value) }
+    Column {
+        Text("$label: ${(draft * multiplier).toInt()}$unit", color = TextSecondary)
+        Slider(
+            modifier = Modifier.semantics { contentDescription = label },
+            value = draft.coerceIn(range.start, range.endInclusive),
+            onValueChange = { draft = it },
+            valueRange = range,
+            onValueChangeFinished = { onCommit(draft) }
+        )
     }
 }

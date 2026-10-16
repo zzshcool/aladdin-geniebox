@@ -35,6 +35,7 @@ class GenieApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        AppLanguage.initialize(this)
 
         database = GenieDatabase.getInstance(this)
         storageManager = StorageManager(this)

@@ -87,3 +87,12 @@
    - `InputMode.UI_NAVIGATION`：首頁、收藏庫與設定畫面，手把按鍵直通 Android 焦點系統，支援 Y 鍵收藏與 X 鍵搜尋。
    - `InputMode.IN_GAME`：遊戲中所有玩家按鍵轉化為 Libretro 核心按鍵遮罩。
    - `InputMode.PAUSE_MENU`：暫停選單僅允許 P1 操作選單，其餘玩家輸入全數阻斷。
+
+## 6. 遊戲操作與語言擴充（2026-10-16）
+
+- **加速與聲音**：`SettingsRepository` 依遊戲保存 1×、1.25×、1.5×、1.75×、2×、3× 目標倍率；加速靜音偏好為共用設定，預設開啟。`EmulatorSession` 調整模擬幀週期，透過 `nativeRunFrame(presentFrame)` 控制是否呼叫呈現，讓核心執行幀與畫面呈現次數分開。保留聲音時，音訊執行緒依倍率抽取完整立體聲 PCM 取樣對，輸出取樣率維持不變，因此速度與音調會一起升高；未實作保留音調的時間伸縮。
+- **存檔預覽與續玩**：`PlayerScreen` 等待進行中的模擬幀結束後，以 `PixelCopy` 擷取 `SurfaceView`，PNG 放在對應的 `states/<core-id>/<game-id>/`。`SaveRepository` 沿用既有時間與縮圖路徑欄位。槽位畫面核對檔案存在性及核心／格式版本；續玩選擇讀取 Slot 0，讀取失敗會回報錯誤。擷取截圖失敗不阻止存檔。
+- **手把映射與斷線**：`InputManager` 在設定頁擷取實體按鈕，依裝置 descriptor 與玩家編號保存映射並快取；只套用於遊戲按鈕，方向軸與 UI 導航不變。遊戲中收到已指派手把的移除事件時，通知 `PlayerScreen` 暫停並切換選單輸入模式，不自動恢復遊戲。
+- **語言資源**：預設繁體中文 `zh-TW`，另提供簡體中文 `zh-CN`（`values-zh-rCN`）與英文 `en`。`AppLanguage` 保存選擇並更新資源 Configuration，設定頁重建 Activity 套用；三種語言均提供對應的字串資源。
+
+本節描述目前程式實作；本次新增功能尚未完成編譯與手機／S905X5M 實機驗證。

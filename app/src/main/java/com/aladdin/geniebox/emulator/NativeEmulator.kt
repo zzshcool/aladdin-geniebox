@@ -19,7 +19,7 @@ class NativeEmulator {
     external fun nativeUnloadCore()
     external fun nativeLoadGame(romPath: String, romBuffer: ByteArray?): Boolean
     external fun nativeUnloadGame()
-    external fun nativeRunFrame()
+    external fun nativeRunFrame(presentFrame: Boolean = true)
     external fun nativeReset()
     external fun nativeSerializeState(): ByteArray?
     external fun nativeUnserializeState(stateData: ByteArray): Boolean

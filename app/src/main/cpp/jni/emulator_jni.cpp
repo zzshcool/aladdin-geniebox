@@ -67,7 +67,7 @@ Java_com_aladdin_geniebox_emulator_NativeEmulator_nativeUnloadGame(
 
 JNIEXPORT void JNICALL
 Java_com_aladdin_geniebox_emulator_NativeEmulator_nativeRunFrame(
-        JNIEnv* env, jobject thiz) {
+        JNIEnv* env, jobject thiz, jboolean presentFrame) {
     // 確保首幀 retro_run 之前 EGL Context 與硬體核心 context_reset 就緒 (R3-01)
     if (GLRenderer::getInstance().isHwRender()) {
         if (!GLRenderer::getInstance().ensureContextReady()) {
@@ -79,7 +79,7 @@ Java_com_aladdin_geniebox_emulator_NativeEmulator_nativeRunFrame(
     }
 
     CoreBridge::getInstance().runFrame();
-    GLRenderer::getInstance().render();
+    if (presentFrame) GLRenderer::getInstance().render();
 }
 
 JNIEXPORT void JNICALL

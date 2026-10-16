@@ -63,7 +63,8 @@ fun FocusableButton(
     text: String,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
-    isPrimary: Boolean = false
+    isPrimary: Boolean = false,
+    enabled: Boolean = true
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -76,9 +77,10 @@ fun FocusableButton(
 
     Button(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier
             .scale(scale)
-            .focusable(interactionSource = interactionSource),
+            .focusable(enabled = enabled, interactionSource = interactionSource),
         interactionSource = interactionSource,
         shape = RoundedCornerShape(8.dp),
         colors = ButtonDefaults.buttonColors(

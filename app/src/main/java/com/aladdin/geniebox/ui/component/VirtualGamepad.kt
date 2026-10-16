@@ -3,7 +3,6 @@ package com.aladdin.geniebox.ui.component
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -15,17 +14,23 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 import com.aladdin.geniebox.domain.model.PlatformType
 import com.aladdin.geniebox.input.PlayerInputSourceAdapter
 import com.aladdin.geniebox.input.RetroPadKey
-import com.aladdin.geniebox.ui.theme.AladdinGold
-import com.aladdin.geniebox.ui.theme.BgDark
-import com.aladdin.geniebox.ui.theme.CardDarkFocused
-import kotlin.math.sqrt
+
+private val GamepadAccent = Color(0xFF99C6AB)
+
+private val GamepadInk = Color(0xFF131615)
+
+private val GamepadSurface = Color(0xFF29342E)
 
 @Composable
 fun VirtualGamepadOverlay(
@@ -34,6 +39,8 @@ fun VirtualGamepadOverlay(
     opacity: Float = 0.65f,
     scale: Float = 1.0f,
     vibrationEnabled: Boolean = true,
+    edgeInset: Float = 8f,
+    bottomInset: Float = 12f,
     modifier: Modifier = Modifier
 ) {
     val view = LocalView.current
@@ -44,16 +51,21 @@ fun VirtualGamepadOverlay(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
+            .safeDrawingPadding()
             .alpha(opacity)
     ) {
+        val clusterSize = minOf(128f * scale, maxHeight.value * 0.42f, (maxWidth.value - 32f) / 2f).coerceAtLeast(64f)
+        val sidePadding = edgeInset.coerceIn(0f, ((maxWidth.value - clusterSize * 2f - 16f) / 2f).coerceAtLeast(0f)).dp
+        val bottomPadding = bottomInset.coerceIn(0f, (maxHeight.value - clusterSize - 56f).coerceAtLeast(0f)).dp
         // 頂部肩鍵 (L, R, L2, R2)
+        if (platform != PlatformType.NES && platform != PlatformType.GB) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp)
+                .padding(horizontal = sidePadding, vertical = 8.dp)
                 .align(Alignment.TopCenter),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -83,13 +95,14 @@ fun VirtualGamepadOverlay(
                 })
             }
         }
+        }
 
         // 左下角：D-Pad 十字鍵或類比搖桿
         Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 8.dp, bottom = 12.dp)
-                .size((128 * scale).dp)
+                .padding(start = sidePadding, bottom = bottomPadding)
+                .size(clusterSize.dp)
         ) {
             VirtualDpad(
                 onDirectionChange = { dir, pressed ->
@@ -103,9 +116,9 @@ fun VirtualGamepadOverlay(
         if (platform == PlatformType.PSP || platform == PlatformType.PS1) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 8.dp, bottom = 48.dp)
-                    .size((100 * scale).dp)
+                    .align(Alignment.TopStart)
+                    .padding(start = sidePadding, top = 64.dp)
+                    .size(minOf(100f * scale, maxHeight.value * 0.24f).dp)
             ) {
                 VirtualAnalogStick(
                     onAnalogChange = { x, y ->
@@ -149,8 +162,8 @@ fun VirtualGamepadOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 8.dp, bottom = 12.dp)
-                .size((128 * scale).dp)
+                .padding(end = sidePadding, bottom = bottomPadding)
+                .size(clusterSize.dp)
         ) {
             VirtualActionButtons(
                 platform = platform,
@@ -170,23 +183,28 @@ fun GamepadButton(
     width: Int = 48,
     height: Int = 48,
     shape: androidx.compose.ui.graphics.Shape = CircleShape,
+    pressedOverride: Boolean? = null,
+    interactive: Boolean = true,
     onStateChange: (Boolean) -> Unit
 ) {
-    var isPressed by remember { mutableStateOf(false) }
+    var touchPressed by remember { mutableStateOf(false) }
+    val isPressed = pressedOverride ?: touchPressed
+    val currentOnStateChange by rememberUpdatedState(onStateChange)
 
     Box(
         modifier = modifier
             .size(width.dp, height.dp)
             .background(
-                color = if (isPressed) AladdinGold else CardDarkFocused.copy(alpha = 0.8f),
+                color = if (isPressed) GamepadAccent else GamepadSurface.copy(alpha = 0.8f),
                 shape = shape
             )
             .border(
                 width = 1.5.dp,
-                color = if (isPressed) Color.White else AladdinGold.copy(alpha = 0.6f),
+                color = if (isPressed) Color.White else GamepadAccent.copy(alpha = 0.6f),
                 shape = shape
             )
-            .pointerInput(Unit) {
+            .pointerInput(interactive) {
+                if (!interactive) return@pointerInput
                 try {
                     awaitPointerEventScope {
                         while (true) {
@@ -195,16 +213,16 @@ fun GamepadButton(
                                 it.pressed && it.position.x >= 0 && it.position.x < size.width &&
                                     it.position.y >= 0 && it.position.y < size.height
                             }
-                            if (down != isPressed) {
-                                isPressed = down
-                                onStateChange(down)
+                            if (down != touchPressed) {
+                                touchPressed = down
+                                currentOnStateChange(down)
                             }
                         }
                     }
                 } finally {
-                    if (isPressed) {
-                        isPressed = false
-                        onStateChange(false)
+                    if (touchPressed) {
+                        touchPressed = false
+                        currentOnStateChange(false)
                     }
                 }
             },
@@ -214,7 +232,7 @@ fun GamepadButton(
             text = label,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
-            color = if (isPressed) BgDark else Color.White
+            color = if (isPressed) GamepadInk else Color.White
         )
     }
 }
@@ -223,24 +241,11 @@ fun GamepadButton(
 fun VirtualDpad(
     onDirectionChange: (key: Int, pressed: Boolean) -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        // UP
-        Box(modifier = Modifier.align(Alignment.TopCenter)) {
-            GamepadButton(label = "▲", onStateChange = { onDirectionChange(RetroPadKey.UP, it) })
-        }
-        // DOWN
-        Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-            GamepadButton(label = "▼", onStateChange = { onDirectionChange(RetroPadKey.DOWN, it) })
-        }
-        // LEFT
-        Box(modifier = Modifier.align(Alignment.CenterStart)) {
-            GamepadButton(label = "◀", onStateChange = { onDirectionChange(RetroPadKey.LEFT, it) })
-        }
-        // RIGHT
-        Box(modifier = Modifier.align(Alignment.CenterEnd)) {
-            GamepadButton(label = "▶", onStateChange = { onDirectionChange(RetroPadKey.RIGHT, it) })
-        }
-    }
+    VirtualButtonCluster(
+        buttons = listOf(RetroPadKey.LEFT to "◀", RetroPadKey.RIGHT to "▶", RetroPadKey.UP to "▲", RetroPadKey.DOWN to "▼"),
+        directional = true,
+        onButtonChange = onDirectionChange
+    )
 }
 
 @Composable
@@ -248,25 +253,109 @@ fun VirtualActionButtons(
     platform: PlatformType,
     onButtonChange: (key: Int, pressed: Boolean) -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        // A / 東
-        Box(modifier = Modifier.align(Alignment.CenterEnd)) {
-            GamepadButton(label = "A", onStateChange = { onButtonChange(RetroPadKey.A, it) })
+    val playStation = platform == PlatformType.PS1 || platform == PlatformType.PSP
+    val buttons = buildList {
+        add(RetroPadKey.A to if (playStation) "○" else "A")
+        add(RetroPadKey.B to if (playStation) "×" else "B")
+        if (platform == PlatformType.SFC || playStation) {
+            add(RetroPadKey.X to if (playStation) "△" else "X")
+            add(RetroPadKey.Y to if (playStation) "□" else "Y")
         }
-        // B / 南
-        Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-            GamepadButton(label = "B", onStateChange = { onButtonChange(RetroPadKey.B, it) })
-        }
+    }
+    VirtualButtonCluster(buttons, directional = false, onButtonChange = onButtonChange)
+}
 
-        // NES 與 GB 只有 A、B 兩鍵，其餘平台具備 X、Y 四鍵
-        if (platform != PlatformType.NES && platform != PlatformType.GB) {
-            // X / 北
-            Box(modifier = Modifier.align(Alignment.TopCenter)) {
-                GamepadButton(label = if (platform == PlatformType.PS1) "△" else "X", onStateChange = { onButtonChange(RetroPadKey.X, it) })
+@Composable
+private fun VirtualButtonCluster(
+    buttons: List<Pair<Int, String>>,
+    directional: Boolean,
+    onButtonChange: (Int, Boolean) -> Unit
+) {
+    var pressedKeys by remember { mutableStateOf(emptySet<Int>()) }
+    val currentOnButtonChange by rememberUpdatedState(onButtonChange)
+    val alignments = if (directional) {
+        listOf(Alignment.CenterStart, Alignment.CenterEnd, Alignment.TopCenter, Alignment.BottomCenter)
+    } else {
+        listOf(Alignment.CenterEnd, Alignment.BottomCenter, Alignment.TopCenter, Alignment.CenterStart)
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize().pointerInput(buttons, directional) {
+            val ownedPointers = mutableSetOf<PointerId>()
+            val heldActionKeys = mutableMapOf<PointerId, Set<Int>>()
+            fun update(keys: Set<Int>) {
+                (pressedKeys - keys).forEach { currentOnButtonChange(it, false) }
+                (keys - pressedKeys).forEach { currentOnButtonChange(it, true) }
+                pressedKeys = keys
             }
-            // Y / 西
-            Box(modifier = Modifier.align(Alignment.CenterStart)) {
-                GamepadButton(label = if (platform == PlatformType.PS1) "□" else "Y", onStateChange = { onButtonChange(RetroPadKey.Y, it) })
+            try {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.filter {
+                            it.pressed && !it.previousPressed &&
+                                it.position.x >= 0 && it.position.x < size.width &&
+                                it.position.y >= 0 && it.position.y < size.height
+                        }.forEach { ownedPointers += it.id }
+                        val changes = event.changes.filter { it.id in ownedPointers }
+                        val points = changes.filter { it.pressed }.map { it.position }
+                        val keys = mutableSetOf<Int>()
+                        if (directional) {
+                            points.firstOrNull()?.let { point ->
+                                val x = (point.x - size.width / 2f) / (size.width / 2f)
+                                val y = (point.y - size.height / 2f) / (size.height / 2f)
+                                if (x * x + y * y > 0.08f) {
+                                    if (abs(x) >= abs(y) * 0.4142f) keys += if (x < 0) RetroPadKey.LEFT else RetroPadKey.RIGHT
+                                    if (abs(y) >= abs(x) * 0.4142f) keys += if (y < 0) RetroPadKey.UP else RetroPadKey.DOWN
+                                }
+                            }
+                        } else {
+                            val diameter = minOf(size.width, size.height) * 0.4f
+                            val radius = diameter * 0.62f
+                            val centers = listOf(
+                                Offset(size.width - diameter / 2f, size.height / 2f),
+                                Offset(size.width / 2f, size.height - diameter / 2f),
+                                Offset(size.width / 2f, diameter / 2f),
+                                Offset(diameter / 2f, size.height / 2f)
+                            )
+                            changes.filter { it.pressed }.forEach { change ->
+                                val touchedKeys = buttons.mapIndexedNotNull { index, button ->
+                                    val delta = change.position - centers[index]
+                                    button.first.takeIf { delta.getDistance() <= radius }
+                                }.toSet()
+                                if (!change.previousPressed) {
+                                    heldActionKeys[change.id] = touchedKeys
+                                }
+                                // Keep the original press until this finger lifts; rolling onto
+                                // another button must not release a held charge button.
+                                keys += heldActionKeys[change.id].orEmpty()
+                                keys += touchedKeys
+                            }
+                        }
+                        update(keys)
+                        changes.forEach { it.consume() }
+                        changes.filter { !it.pressed }.forEach {
+                            ownedPointers -= it.id
+                            heldActionKeys.remove(it.id)
+                        }
+                    }
+                }
+            } finally {
+                update(emptySet())
+            }
+        }
+    ) {
+        val diameter = (minOf(maxWidth.value, maxHeight.value) * 0.4f).roundToInt()
+        buttons.forEachIndexed { index, (key, label) ->
+            Box(modifier = Modifier.align(alignments[index])) {
+                GamepadButton(
+                    label = label,
+                    width = diameter,
+                    height = diameter,
+                    pressedOverride = key in pressedKeys,
+                    interactive = false,
+                    onStateChange = {}
+                )
             }
         }
     }
@@ -277,43 +366,58 @@ fun VirtualAnalogStick(
     onAnalogChange: (x: Float, y: Float) -> Unit
 ) {
     var thumbOffset by remember { mutableStateOf(Offset.Zero) }
-    val maxRadius = 40f
+    val currentOnAnalogChange by rememberUpdatedState(onAnalogChange)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(CardDarkFocused.copy(alpha = 0.5f), CircleShape)
-            .border(1.dp, AladdinGold.copy(alpha = 0.4f), CircleShape)
+            .background(GamepadSurface.copy(alpha = 0.5f), CircleShape)
+            .border(1.dp, GamepadAccent.copy(alpha = 0.4f), CircleShape)
             .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragEnd = {
-                        thumbOffset = Offset.Zero
-                        onAnalogChange(0f, 0f)
-                    },
-                    onDragCancel = {
-                        thumbOffset = Offset.Zero
-                        onAnalogChange(0f, 0f)
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        val newOffset = thumbOffset + dragAmount
-                        val dist = sqrt(newOffset.x * newOffset.x + newOffset.y * newOffset.y)
-                        thumbOffset = if (dist > maxRadius) {
-                            Offset(newOffset.x / dist * maxRadius, newOffset.y / dist * maxRadius)
-                        } else {
-                            newOffset
+                fun update(position: Offset) {
+                    val radius = (minOf(size.width, size.height) / 2f - 18.dp.toPx()).coerceAtLeast(1f)
+                    val delta = position - Offset(size.width / 2f, size.height / 2f)
+                    val distance = delta.getDistance()
+                    thumbOffset = if (distance > radius) delta * (radius / distance) else delta
+                    currentOnAnalogChange(thumbOffset.x / radius, thumbOffset.y / radius)
+                }
+                try {
+                    awaitPointerEventScope {
+                        var pointerId: PointerId? = null
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (pointerId == null) {
+                                pointerId = event.changes.firstOrNull {
+                                    it.pressed && !it.previousPressed &&
+                                        it.position.x >= 0 && it.position.x < size.width &&
+                                        it.position.y >= 0 && it.position.y < size.height
+                                }?.id
+                            }
+                            val pointer = event.changes.firstOrNull { it.id == pointerId }
+                            if (pointer != null) {
+                                pointer.consume()
+                                if (pointer.pressed) {
+                                    update(pointer.position)
+                                } else {
+                                    pointerId = null
+                                    thumbOffset = Offset.Zero
+                                    currentOnAnalogChange(0f, 0f)
+                                }
+                            }
                         }
-                        onAnalogChange(thumbOffset.x / maxRadius, thumbOffset.y / maxRadius)
                     }
-                )
+                } finally {
+                    thumbOffset = Offset.Zero
+                    currentOnAnalogChange(0f, 0f)
+                }
             },
         contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .offset(thumbOffset.x.dp, thumbOffset.y.dp)
+                .offset { IntOffset(thumbOffset.x.roundToInt(), thumbOffset.y.roundToInt()) }
                 .size(36.dp)
-                .background(AladdinGold, CircleShape)
+                .background(GamepadAccent, CircleShape)
         )
     }
 }

@@ -1,5 +1,7 @@
 package com.aladdin.geniebox.emulator
 
+import com.aladdin.geniebox.R
+import com.aladdin.geniebox.app.AppLanguage
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -11,6 +13,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.aladdin.geniebox.data.repository.GameRepository
 import com.aladdin.geniebox.data.repository.RomSourceRepository
 import com.aladdin.geniebox.data.repository.SaveRepository
+import com.aladdin.geniebox.data.repository.SettingsRepository
 import com.aladdin.geniebox.data.storage.SafBridge
 import com.aladdin.geniebox.data.storage.StorageManager
 import com.aladdin.geniebox.domain.model.EmulationSessionState
@@ -51,6 +54,19 @@ class EmulatorSession(
 
     private val _sessionState = MutableStateFlow<EmulationSessionState>(EmulationSessionState.Idle)
     val sessionState: StateFlow<EmulationSessionState> = _sessionState.asStateFlow()
+    private val _playbackSpeed = MutableStateFlow(1f)
+    val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
+    private val _muteFastForward = MutableStateFlow(true)
+    val muteFastForward: StateFlow<Boolean> = _muteFastForward.asStateFlow()
+
+    fun setMuteFastForward(enabled: Boolean) {
+        _muteFastForward.value = enabled
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        require(speed in SettingsRepository.GAME_SPEEDS)
+        _playbackSpeed.value = speed
+    }
 
     private val sessionMutex = Mutex()
     private val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -82,13 +98,13 @@ class EmulatorSession(
         }
 
         currentGame = game
-        _sessionState.value = EmulationSessionState.Preparing("正在檢查核心與設備環境…", 0.1f)
+        _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_checking_the_core_and_device), 0.1f)
 
         // 1. 檢查 ABI
         if (!coreRegistry.isAbiSupported()) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.UNSUPPORTED_ABI,
-                message = "設備未支援 arm64-v8a ABI，無法載入 64 位元模擬核心。"
+                message = AppLanguage.text(R.string.ui_this_device_does_not_support_arm64_v8a_a)
             )
             return@withLock
         }
@@ -99,7 +115,7 @@ class EmulatorSession(
         if (coreFile == null || desc == null) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.MISSING_CORE,
-                message = "缺少 ${game.platform.displayName} 核心動態庫 (${desc?.soFileName ?: "未知"})。請執行 scripts/build_cores.sh。"
+                message = AppLanguage.text(R.string.ui_missing_value_core_value_build_it_with_scripts, game.platform.displayName, desc?.soFileName ?: AppLanguage.text(R.string.ui_unknown))
             )
             return@withLock
         }
@@ -111,19 +127,19 @@ class EmulatorSession(
 
         // 3.1 PSP Assets 狀態與部署保證 (R7-02, R8-01)
         if (game.platform == PlatformType.PSP) {
-            _sessionState.value = EmulationSessionState.Preparing("正在準備 PSP 系統資源與字型…", 0.25f)
+            _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_preparing_psp_system_resources_and_fonts), 0.25f)
             val success = storageManager.deployPpssppAssetsIfNeeded()
             if (!success) {
                 _sessionState.value = EmulationSessionState.Failed(
                     reason = FailureReason.UNKNOWN,
-                    message = "PPSSPP 系統資源部署失敗（可能內部儲存空間不足或讀寫異常）。請釋出儲存空間後重試。"
+                    message = AppLanguage.text(R.string.ui_unable_to_deploy_psp_resources_check_available_storage)
                 )
                 return@withLock
             }
         }
 
         // 4. 準備 ROM Staging 檔案 (Finding 6, 7, 17)
-        _sessionState.value = EmulationSessionState.Preparing("正在準備遊戲 ROM 檔案…", 0.4f)
+        _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_preparing_the_game_rom), 0.4f)
         val uri = Uri.parse(game.documentUri)
         val fileName = File(game.relativePath).name
 
@@ -150,7 +166,7 @@ class EmulatorSession(
                         sourceLastModified = game.lastModified,
                         onProgress = { cur, total ->
                             val p = if (total > 0) (cur.toFloat() / total.toFloat()) * 0.4f + 0.4f else 0.5f
-                            _sessionState.value = EmulationSessionState.Preparing("正在準備光碟軌道檔案…", p)
+                            _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_preparing_disc_tracks), p)
                         }
                     )
                 }
@@ -169,7 +185,7 @@ class EmulatorSession(
                         sourceLastModified = game.lastModified,
                         onProgress = { cur, total ->
                             val p = if (total > 0) (cur.toFloat() / total.toFloat()) * 0.4f + 0.4f else 0.5f
-                            _sessionState.value = EmulationSessionState.Preparing("正在準備多片光碟檔案…", p)
+                            _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_preparing_the_multi_disc_game), p)
                         }
                     )
                 }
@@ -183,7 +199,7 @@ class EmulatorSession(
                         sourceLastModified = game.lastModified,
                         onProgress = { cur, total ->
                             val p = if (total > 0) (cur.toFloat() / total.toFloat()) * 0.4f + 0.4f else 0.5f
-                            _sessionState.value = EmulationSessionState.Preparing("正在準備遊戲檔案…", p)
+                            _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_preparing_game_files), p)
                         }
                     )
                 }
@@ -193,7 +209,7 @@ class EmulatorSession(
         if (staged == null || !staged.exists()) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.SOURCE_OFFLINE,
-                message = "外接來源離線或無法讀取 ROM 檔案：$fileName"
+                message = AppLanguage.text(R.string.ui_game_source_is_offline_or_unreadable_value, fileName)
             )
             return@withLock
         }
@@ -232,7 +248,7 @@ class EmulatorSession(
         if (!coreLoaded) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.MISSING_CORE,
-                message = "載入 Libretro 核心動態庫失敗：${coreFile.name}"
+                message = AppLanguage.text(R.string.ui_unable_to_load_the_libretro_core_value, coreFile.name)
             )
             return@withLock
         }
@@ -240,7 +256,7 @@ class EmulatorSession(
         if (!gameLoaded) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.ROM_CORRUPTED,
-                message = "模擬核心無法識別或載入此 ROM 格式。"
+                message = AppLanguage.text(R.string.ui_the_emulator_core_cannot_recognize_or_load_this)
             )
             return@withLock
         }
@@ -261,10 +277,19 @@ class EmulatorSession(
                 expectedCoreVersion = desc.version,
                 slotIndex = 0
             )
-            if (stateData != null) {
+            val restored = stateData != null && withContext(emulationDispatcher) {
+                nativeEmulator.nativeUnserializeState(stateData)
+            }
+            if (!restored) {
                 withContext(emulationDispatcher) {
-                    nativeEmulator.nativeUnserializeState(stateData)
+                    nativeEmulator.nativeUnloadGame()
+                    nativeEmulator.nativeUnloadCore()
                 }
+                _sessionState.value = EmulationSessionState.Failed(
+                    reason = FailureReason.UNKNOWN,
+                    message = AppLanguage.text(R.string.play_resume_failed)
+                )
+                return@withLock
             }
         }
 
@@ -335,14 +360,37 @@ class EmulatorSession(
 
         audioJob = coroutineScope.launch(Dispatchers.IO) {
             val audioBuffer = ShortArray(2048)
+            var outputSuppressed = false
+            var sourceFramePosition = 0.0
+            var previousAudioSpeed = _playbackSpeed.value
             while (isActive && isRunning) {
-                if (isPaused) {
-                    delay(20)
-                    continue
+                val speed = _playbackSpeed.value
+                val suppressOutput = isPaused || (_muteFastForward.value && speed > 1f)
+                if (speed != previousAudioSpeed || suppressOutput) sourceFramePosition = 0.0
+                previousAudioSpeed = speed
+                if (suppressOutput != outputSuppressed) {
+                    if (suppressOutput) {
+                        audioTrack?.pause()
+                        audioTrack?.flush()
+                    } else {
+                        audioTrack?.play()
+                    }
+                    outputSuppressed = suppressOutput
                 }
                 val readCount = nativeEmulator.nativeReadAudioSamples(audioBuffer)
-                if (readCount > 0) {
-                    audioTrack?.write(audioBuffer, 0, readCount)
+                if (readCount > 0 && !suppressOutput) {
+                    // Consume accelerated PCM at the game speed while keeping AudioTrack's
+                    // output sample rate fixed. Stereo pairs always stay together.
+                    val frameCount = readCount / 2
+                    var outputSamples = 0
+                    while (sourceFramePosition < frameCount) {
+                        val sourceIndex = sourceFramePosition.toInt() * 2
+                        audioBuffer[outputSamples++] = audioBuffer[sourceIndex]
+                        audioBuffer[outputSamples++] = audioBuffer[sourceIndex + 1]
+                        sourceFramePosition += speed
+                    }
+                    sourceFramePosition -= frameCount
+                    audioTrack?.write(audioBuffer, 0, outputSamples)
                 } else {
                     delay(2)
                 }
@@ -360,6 +408,8 @@ class EmulatorSession(
             var frameCounter = 0
             var lastFpsCalc = System.currentTimeMillis()
             var currentCalculatedFps = targetFps
+            var previousSpeed = _playbackSpeed.value
+            var renderCredit = 0.0
 
             while (isActive && isRunning) {
                 if (isPaused) {
@@ -368,7 +418,16 @@ class EmulatorSession(
                     continue
                 }
 
-                nativeEmulator.nativeRunFrame()
+                val speed = _playbackSpeed.value
+                if (speed != previousSpeed) {
+                    nextFrameTime = System.nanoTime()
+                    renderCredit = 0.0
+                    previousSpeed = speed
+                }
+                renderCredit += 1.0 / speed
+                val presentFrame = renderCredit >= 1.0 - 0.000001
+                if (presentFrame) renderCredit -= 1.0
+                nativeEmulator.nativeRunFrame(presentFrame)
                 frameCounter++
 
                 val now = System.currentTimeMillis()
@@ -386,11 +445,12 @@ class EmulatorSession(
                     )
                 }
 
-                nextFrameTime += framePeriodNs
+                val acceleratedPeriodNs = (framePeriodNs / speed).toLong()
+                nextFrameTime += acceleratedPeriodNs
                 val sleepNs = nextFrameTime - System.nanoTime()
                 if (sleepNs > 1_000_000) {
                     delay(sleepNs / 1_000_000)
-                } else if (sleepNs < -framePeriodNs * 2) {
+                } else if (sleepNs < -acceleratedPeriodNs * 2) {
                     nextFrameTime = System.nanoTime()
                 }
             }
@@ -419,7 +479,9 @@ class EmulatorSession(
         }
     }
 
-    suspend fun saveManualState(slotIndex: Int): Boolean = sessionMutex.withLock {
+    suspend fun awaitPausedFrame() = withContext(emulationDispatcher) { }
+
+    suspend fun saveManualState(slotIndex: Int, thumbnailPath: String? = null): Boolean = sessionMutex.withLock {
         val g = currentGame ?: return@withLock false
         val stateBytes = withContext(emulationDispatcher) {
             nativeEmulator.nativeSerializeState()
@@ -430,7 +492,8 @@ class EmulatorSession(
             coreId = coreDesc?.coreId ?: "unknown",
             coreVersion = coreDesc?.version ?: "1.0",
             slotIndex = slotIndex,
-            stateData = stateBytes
+            stateData = stateBytes,
+            thumbnailPath = thumbnailPath
         )
     }
 
@@ -459,11 +522,11 @@ class EmulatorSession(
     /**
      * 安全停止遊戲。若存檔失敗且未強制放棄，維持暫停狀態，回報具體錯誤 (Finding 9, R2-06)
      */
-    suspend fun stopGame(forceDiscard: Boolean = false): StopSessionResult = sessionMutex.withLock {
-        stopGameInternal(forceDiscard)
+    suspend fun stopGame(forceDiscard: Boolean = false, thumbnailPath: String? = null): StopSessionResult = sessionMutex.withLock {
+        stopGameInternal(forceDiscard, thumbnailPath)
     }
 
-    private suspend fun stopGameInternal(forceDiscard: Boolean): StopSessionResult {
+    private suspend fun stopGameInternal(forceDiscard: Boolean, thumbnailPath: String? = null): StopSessionResult {
         var sramSaved = true
         var stateSaved = true
         var errorMsg: String? = null
@@ -478,7 +541,7 @@ class EmulatorSession(
                 val ok = saveRepository.saveSram(g.platform, g.id, sram)
                 if (!ok) {
                     sramSaved = false
-                    errorMsg = "原生 SRAM 存檔寫入內部儲存失敗 (空間不足或權限錯誤)"
+                    errorMsg = AppLanguage.text(R.string.ui_unable_to_write_the_game_save_storage_full)
                 }
             }
 
@@ -493,11 +556,12 @@ class EmulatorSession(
                     coreId = coreDesc?.coreId ?: "unknown",
                     coreVersion = coreDesc?.version ?: "1.0",
                     slotIndex = 0,
-                    stateData = stateBytes
+                    stateData = stateBytes,
+                    thumbnailPath = thumbnailPath
                 )
                 if (!ok) {
                     stateSaved = false
-                    if (errorMsg == null) errorMsg = "自動即時存檔寫入失敗"
+                    if (errorMsg == null) errorMsg = AppLanguage.text(R.string.ui_unable_to_write_the_automatic_save_state)
                 }
             }
 

@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import com.aladdin.geniebox.domain.model.Game
 import com.aladdin.geniebox.feature.library.LibraryScreen
 import com.aladdin.geniebox.feature.player.PlayerScreen
@@ -31,6 +32,10 @@ class MainActivity : ComponentActivity() {
 
     private val app get() = GenieApplication.instance
 
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(AppLanguage.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -41,7 +46,9 @@ class MainActivity : ComponentActivity() {
         hideSystemUi()
 
         setContent {
-            AladdinGenieBoxTheme {
+            val themeMode by app.settingsRepository.themeMode.collectAsState(initial = 0)
+            AladdinGenieBoxTheme(themeMode = themeMode) {
+                val libraryStateHolder = rememberSaveableStateHolder()
                 val sources by app.romSourceRepository.getAllSources().collectAsState(initial = emptyList())
                 var setupCompletedOrSkipped by rememberSaveable { mutableStateOf(false) }
                 var currentDestination by rememberSaveable { mutableStateOf<String>("DEFAULT") }
@@ -75,6 +82,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     is AppDestination.Library -> {
+                        libraryStateHolder.SaveableStateProvider("library") {
                         LibraryScreen(
                             onGameSelect = { game ->
                                 activeGame = game
@@ -87,6 +95,7 @@ class MainActivity : ComponentActivity() {
                                 currentDestination = "SETUP"
                             }
                         )
+                    }
                     }
                     is AppDestination.Player -> {
                         PlayerScreen(

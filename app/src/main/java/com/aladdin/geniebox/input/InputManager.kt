@@ -10,6 +10,9 @@ import com.aladdin.geniebox.emulator.NativeEmulator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import com.aladdin.geniebox.data.repository.SettingsRepository
 import kotlin.math.abs
 
 enum class InputMode {
@@ -42,7 +45,7 @@ class InputManager(
         val playerId: Int, // 1, 2, 3, 4
         var deviceId: Int = -1,
         var descriptor: String = "",
-        var deviceName: String = "未指派",
+        var deviceName: String = "",
         var isConnected: Boolean = false,
         var digitalButtons: Int = 0,
         var analogLeftX: Short = 0,
@@ -56,6 +59,44 @@ class InputManager(
 
     private val _playerProfiles = MutableStateFlow<List<ControllerProfile>>(emptyList())
     val playerProfiles: StateFlow<List<ControllerProfile>> = _playerProfiles.asStateFlow()
+    private val settings = SettingsRepository(context)
+    private val _disconnections = MutableSharedFlow<Int>(extraBufferCapacity = 4)
+    val disconnections = _disconnections.asSharedFlow()
+    private var mappingPlayerId: Int? = null
+    private var mappingRetroKey: Int? = null
+    private var mappingCompleted: (() -> Unit)? = null
+    private val controllerMaps = mutableMapOf<Pair<String, Int>, Map<Int, Int>>()
+
+    fun beginButtonMapping(playerId: Int, retroKey: Int, onComplete: () -> Unit) {
+        releaseAllInputs()
+        mappingPlayerId = playerId
+        mappingRetroKey = retroKey
+        mappingCompleted = onComplete
+    }
+
+    fun cancelButtonMapping() {
+        mappingPlayerId = null
+        mappingRetroKey = null
+        mappingCompleted = null
+    }
+
+    fun resetButtonMapping(playerId: Int) {
+        val slot = slots.getOrNull(playerId - 1) ?: return
+        settings.resetControllerMapping(slot.descriptor, playerId)
+        controllerMaps.remove(slot.descriptor to playerId)
+        releaseAllInputs()
+    }
+
+    private fun keyMap(slot: PlayerSlot): Map<Int, Int> =
+        controllerMaps.getOrPut(slot.descriptor to slot.playerId) {
+            settings.controllerMapping(slot.descriptor, slot.playerId).ifEmpty { DefaultControllerProfile.DEFAULT_KEY_MAP }
+        }
+
+    fun mappedButtonName(playerId: Int, retroKey: Int): String {
+        val slot = slots.getOrNull(playerId - 1) ?: return "—"
+        val key = keyMap(slot).entries.firstOrNull { it.value == retroKey }?.key ?: return "—"
+        return KeyEvent.keyCodeToString(key).removePrefix("KEYCODE_")
+    }
 
     var inputMode: InputMode = InputMode.UI_NAVIGATION
         private set
@@ -101,7 +142,7 @@ class InputManager(
                 if (emptySlot != null) {
                     emptySlot.deviceId = dev.id
                     emptySlot.descriptor = dev.descriptor
-                    emptySlot.deviceName = dev.name ?: "遊戲控制器"
+                    emptySlot.deviceName = dev.name ?: ""
                     emptySlot.isConnected = true
                 }
             }
@@ -120,12 +161,12 @@ class InputManager(
         if (dev != null) {
             slot.deviceId = dev.id
             slot.descriptor = dev.descriptor
-            slot.deviceName = dev.name ?: "遊戲控制器"
+            slot.deviceName = dev.name ?: ""
             slot.isConnected = true
         } else {
             slot.deviceId = -1
             slot.descriptor = ""
-            slot.deviceName = "未指派"
+            slot.deviceName = ""
             slot.isConnected = false
         }
         updateProfilesState()
@@ -142,7 +183,7 @@ class InputManager(
         val nextFree = slots.firstOrNull { !it.isConnected } ?: return null
         nextFree.deviceId = dev.id
         nextFree.descriptor = dev.descriptor
-        nextFree.deviceName = dev.name ?: "遊戲控制器"
+        nextFree.deviceName = dev.name ?: ""
         nextFree.isConnected = true
         updateProfilesState()
         return nextFree.playerId
@@ -152,6 +193,27 @@ class InputManager(
         val deviceId = event.deviceId
         val slot = slots.firstOrNull { it.deviceId == deviceId } ?: slots[0]
         val playerIdx = slot.playerId - 1
+
+        if (mappingPlayerId != null && KeyEvent.isGamepadButton(event.keyCode)) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
+                slot.playerId == mappingPlayerId && slot.deviceId == deviceId && slot.isConnected) {
+                val target = mappingRetroKey ?: return true
+                val mapping = keyMap(slot).toMutableMap()
+                val previousKey = mapping.entries.firstOrNull { it.value == target }?.key
+                val previousTarget = mapping[event.keyCode]
+                mapping.entries.removeAll { it.value == target }
+                mapping[event.keyCode] = target
+                if (previousKey != null && previousKey != event.keyCode && previousTarget != null) {
+                    mapping[previousKey] = previousTarget
+                }
+                settings.setControllerMapping(slot.descriptor, slot.playerId, mapping)
+                controllerMaps[slot.descriptor to slot.playerId] = mapping
+                val complete = mappingCompleted
+                cancelButtonMapping()
+                complete?.invoke()
+            }
+            return true
+        }
 
         if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
             // 返回鍵交由 Activity 或 BackHandler 統一處理
@@ -193,7 +255,7 @@ class InputManager(
             }
             InputMode.IN_GAME -> {
                 // 遊戲運行中模式：將事件映射為 RetroPad 狀態傳送給原生模擬核心
-                val retroKey = DefaultControllerProfile.DEFAULT_KEY_MAP[event.keyCode] ?: return false
+                val retroKey = keyMap(slot)[event.keyCode] ?: return false
                 val isDown = (event.action == KeyEvent.ACTION_DOWN)
 
                 if (isDown) {
@@ -283,11 +345,15 @@ class InputManager(
     override fun onInputDeviceRemoved(deviceId: Int) {
         val slot = slots.firstOrNull { it.deviceId == deviceId }
         if (slot != null) {
+            val wasPlaying = inputMode == InputMode.IN_GAME
             slot.isConnected = false
             slot.digitalButtons = 0
             slot.analogLeftX = 0
             slot.analogLeftY = 0
+            slot.analogRightX = 0
+            slot.analogRightY = 0
             flushPlayerInput(slot.playerId - 1)
+            if (wasPlaying) _disconnections.tryEmit(slot.playerId)
         }
         refreshConnectedDevices()
     }

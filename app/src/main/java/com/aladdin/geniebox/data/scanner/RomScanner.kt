@@ -1,5 +1,7 @@
 package com.aladdin.geniebox.data.scanner
 
+import com.aladdin.geniebox.R
+import com.aladdin.geniebox.app.AppLanguage
 import android.content.Context
 import android.net.Uri
 import android.util.Log
@@ -40,7 +42,7 @@ class RomScanner(
     ): Int = withContext(Dispatchers.IO) {
         val rootDoc = DocumentFile.fromTreeUri(context, treeUri)
         if (rootDoc == null || !rootDoc.canRead()) {
-            onProgress(ScanProgress(sourceId, 0, "", isFinished = true, error = "無法讀取外接儲存目錄"))
+            onProgress(ScanProgress(sourceId, 0, "", isFinished = true, error = AppLanguage.text(R.string.ui_unable_to_read_the_game_folder)))
             return@withContext 0
         }
 
@@ -78,7 +80,7 @@ class RomScanner(
             romSourceDao.updateLastScannedTime(sourceId, System.currentTimeMillis())
             romSourceDao.updateConnectionStatus(sourceId, true)
 
-            onProgress(ScanProgress(sourceId, discoveredGames.size, "掃描完成", isFinished = true))
+            onProgress(ScanProgress(sourceId, discoveredGames.size, AppLanguage.text(R.string.ui_scan_complete), isFinished = true))
             discoveredGames.size
         } catch (e: Exception) {
             Log.e(TAG, "Scan failed for source $sourceId", e)

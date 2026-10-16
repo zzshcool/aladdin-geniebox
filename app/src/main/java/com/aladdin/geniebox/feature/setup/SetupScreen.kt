@@ -1,5 +1,7 @@
 package com.aladdin.geniebox.feature.setup
 
+import com.aladdin.geniebox.R
+import com.aladdin.geniebox.app.AppLanguage
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -32,43 +34,59 @@ fun SetupScreen(
     val coroutineScope = rememberCoroutineScope()
     val app = GenieApplication.instance
 
-    var statusMessage by remember { mutableStateOf("選擇手機、USB 或 SD 卡裡的遊戲資料夾。") }
+    var statusMessage by remember { mutableStateOf(AppLanguage.text(R.string.ui_choose_a_game_folder_on_your_phone_usb)) }
     var isProcessing by remember { mutableStateOf(false) }
+    var scannedGames by remember { mutableStateOf<Int?>(null) }
 
     // SAF 目錄選擇器
     val openDocumentTreeLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
+            scannedGames = null
             isProcessing = true
-            statusMessage = "正在驗證外接目錄並取得永久存取權限…"
+            statusMessage = AppLanguage.text(R.string.ui_checking_the_folder_and_requesting_persistent_access)
             try {
                 // 保存持久化 URI 權限
                 val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 context.contentResolver.takePersistableUriPermission(uri, takeFlags)
 
                 coroutineScope.launch {
-                    val sourceId = uri.lastPathSegment?.replace(":", "_") ?: "usb_source"
-                    app.romSourceRepository.registerSource(
-                        id = sourceId,
-                        displayName = "外接遊戲儲存 ($sourceId)",
-                        treeUri = uri.toString()
-                    )
-
-                    statusMessage = "正在建立遊戲庫索引，請稍候…"
-                    app.romScanner.scanSource(sourceId, uri) { progress ->
-                        statusMessage = "掃描中：${progress.currentFile} (${progress.scannedCount} 款遊戲)"
+                    try {
+                        val sourceId = uri.lastPathSegment?.replace(":", "_") ?: "usb_source"
+                        app.romSourceRepository.registerSource(
+                            id = sourceId,
+                            displayName = AppLanguage.text(R.string.ui_game_storage_value, sourceId),
+                            treeUri = uri.toString()
+                        )
+                        statusMessage = AppLanguage.text(R.string.ui_building_your_library_please_wait)
+                        var scanError: String? = null
+                        val count = app.romScanner.scanSource(sourceId, uri) { progress ->
+                            if (progress.error != null) scanError = progress.error
+                            statusMessage = progress.error ?: AppLanguage.text(
+                                R.string.ui_scanning_value_value_games, progress.currentFile, progress.scannedCount
+                            )
+                        }
+                        if (scanError != null) {
+                            statusMessage = AppLanguage.text(R.string.ui_scan_failed_value, scanError)
+                        } else {
+                            scannedGames = count
+                            statusMessage = AppLanguage.text(
+                                if (count == 0) R.string.ux_scan_empty else R.string.ux_scan_summary, count
+                            )
+                        }
+                    } catch (e: Exception) {
+                        statusMessage = AppLanguage.text(R.string.ui_scan_failed_value, e.localizedMessage)
+                    } finally {
+                        isProcessing = false
                     }
-
-                    isProcessing = false
-                    onSetupComplete()
                 }
             } catch (e: Exception) {
                 isProcessing = false
-                statusMessage = "取得授權失敗：${e.localizedMessage}"
+                statusMessage = AppLanguage.text(R.string.ui_unable_to_get_access_value, e.localizedMessage)
             }
         } else {
-            statusMessage = "未選擇目錄。TV 若未提供系統選擇器，請確認已插入相容的 USB 隨身碟。"
+            statusMessage = AppLanguage.text(R.string.ui_no_folder_selected_if_your_tv_has_no)
         }
     }
 
@@ -86,16 +104,16 @@ fun SetupScreen(
             modifier = Modifier.widthIn(max = 640.dp)
         ) {
             Text(
-                text = "把回憶，放回掌心。",
+                text = AppLanguage.text(R.string.ui_bring_your_memories_along),
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
             )
 
             Text(
-                text = "GenieBox · 你的隨身遊戲收藏庫\n" +
-                       "紅白機、Game Boy、超任、PS1 與 PSP。\n" +
-                       "選好遊戲，接著玩。",
+                text = AppLanguage.text(R.string.ui_geniebox_your_portable_game_collection_n) +
+                       AppLanguage.text(R.string.ui_nes_game_boy_snes_ps1_and_psp_n) +
+                       AppLanguage.text(R.string.ui_pick_a_game_keep_playing),
                 fontSize = 16.sp,
                 color = TextSecondary,
                 textAlign = TextAlign.Center,
@@ -109,7 +127,7 @@ fun SetupScreen(
                     .padding(16.dp)
             ) {
                 Text(
-                    text = "手機資料夾或外接儲存都可以。\n遊戲進度保存在這台裝置，不會跟著隨身碟拔走。",
+                    text = AppLanguage.text(R.string.ui_use_a_folder_on_your_phone_or_external),
                     fontSize = 13.sp,
                     color = TextTertiary,
                     textAlign = TextAlign.Center
@@ -129,7 +147,7 @@ fun SetupScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 FocusableButton(
-                    text = if (isProcessing) "正在整理遊戲…" else "加入遊戲資料夾",
+                    text = if (isProcessing) AppLanguage.text(R.string.ui_organizing_your_games) else AppLanguage.text(R.string.ui_add_game_folder),
                     isPrimary = true,
                     onClick = {
                         if (!isProcessing) {
@@ -139,7 +157,8 @@ fun SetupScreen(
                 )
 
                 FocusableButton(
-                    text = "先看看遊戲庫",
+                    text = AppLanguage.text(if (scannedGames != null) R.string.ux_continue_library else R.string.ui_explore_the_library),
+                    enabled = !isProcessing,
                     onClick = onSetupComplete
                 )
             }

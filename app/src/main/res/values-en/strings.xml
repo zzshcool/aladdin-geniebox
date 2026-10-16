@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">Aladdin GenieBox</string>
+    <string name="app_desc">Open-source retro game library</string>
+
+    <!-- Platform Names -->
+    <string name="platform_nes">Nintendo NES / FC</string>
+    <string name="platform_gb">Game Boy / Color</string>
+    <string name="platform_gba">Game Boy Advance</string>
+    <string name="platform_sfc">Super Nintendo / SNES</string>
+    <string name="platform_ps1">PlayStation 1</string>
+    <string name="platform_psp">PlayStation Portable</string>
+
+    <!-- Navigation / Categories -->
+    <string name="category_all">All games</string>
+    <string name="category_favorites">Favorites</string>
+    <string name="category_recent">Recently played</string>
+
+    <!-- Settings / Status -->
+    <string name="status_ready">Ready</string>
+    <string name="status_offline">Source offline</string>
+    <string name="status_scanning">Scanning…</string>
+    <string name="status_missing_core">Emulator core missing</string>
+    <string name="status_missing_bios">Required BIOS missing</string>
+
+    <!-- Pause Menu -->
+    <string name="menu_resume">Resume game</string>
+    <string name="menu_save_state">Save state</string>
+    <string name="menu_load_state">Load state</string>
+    <string name="menu_reset">Restart</string>
+    <string name="menu_disk_swap">Change disc</string>
+    <string name="menu_controller">Controller settings</string>
+    <string name="menu_video">Video and aspect ratio</string>
+    <string name="menu_exit">Save and leave</string>
+</resources>

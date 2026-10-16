@@ -1,17 +1,29 @@
 package com.aladdin.geniebox.ui.theme
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
 
-val BgDark = Color(0xFF131615)
-val CardDark = Color(0xFF1D2320)
-val CardDarkFocused = Color(0xFF29342E)
-val AladdinGold = Color(0xFF99C6AB)
-val AladdinGoldLight = Color(0xFFCBE3D4)
-val TextPrimary = Color(0xFFF0F2F5)
-val TextSecondary = Color(0xFF9DA5B4)
-val TextTertiary = Color(0xFF6B7280)
+val BgDark: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.background
+val CardDark: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surface
+val CardDarkFocused: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surfaceVariant
+val AladdinGold: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
+val AladdinGoldLight: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
+val TextPrimary: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurface
+val TextSecondary: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant
+val TextTertiary: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+val DividerDark: Color
+    @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.outline
 
-val AccentRed = Color(0xFFEF4444)
-val AccentGreen = Color(0xFF10B981)
+val AccentRed = Color(0xFFDC4444)
+val AccentGreen = Color(0xFF238653)
 val AccentBlue = Color(0xFF3B82F6)
-val DividerDark = Color(0xFF2A2E39)

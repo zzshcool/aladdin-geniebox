@@ -1,5 +1,7 @@
 package com.aladdin.geniebox.ui.component
 
+import com.aladdin.geniebox.R
+import com.aladdin.geniebox.app.AppLanguage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
@@ -47,7 +49,7 @@ fun OfflineBadge(modifier: Modifier = Modifier) {
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
         Text(
-            text = "來源離線",
+            text = AppLanguage.text(R.string.ui_source_offline),
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             color = AccentRed
