@@ -9,6 +9,12 @@
 extern "C" {
 
 JNIEXPORT void JNICALL
+Java_com_aladdin_geniebox_emulator_NativeEmulator_nativeSetNesOverclocking(
+        JNIEnv* env, jobject thiz, jboolean enabled) {
+    CoreBridge::getInstance().setNesOverclocking(enabled == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
 Java_com_aladdin_geniebox_emulator_NativeEmulator_nativeInit(
         JNIEnv* env, jobject thiz,
         jstring systemDir, jstring saveDir, jstring coreAssetsDir) {

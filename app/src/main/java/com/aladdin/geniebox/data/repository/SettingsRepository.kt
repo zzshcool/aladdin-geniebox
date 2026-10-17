@@ -51,6 +51,14 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[floatPreferencesKey("game_speed_$gameId")] = speed }
     }
 
+    fun nesReduceSlowdown(gameId: String): Flow<Boolean> = context.dataStore.data.map {
+        it[booleanPreferencesKey("nes_reduce_slowdown_$gameId")] ?: false
+    }
+
+    suspend fun setNesReduceSlowdown(gameId: String, enabled: Boolean) {
+        context.dataStore.edit { it[booleanPreferencesKey("nes_reduce_slowdown_$gameId")] = enabled }
+    }
+
     private fun controllerMappingKey(descriptor: String, playerId: Int) = "${playerId}_$descriptor"
 
     fun controllerMapping(descriptor: String, playerId: Int): Map<Int, Int> {

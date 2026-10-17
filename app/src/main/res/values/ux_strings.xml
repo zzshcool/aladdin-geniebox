@@ -69,4 +69,6 @@
     <string name="review_bios_hint">自行準備 scph5500.bin、scph5501.bin 或 scph5502.bin（512 KiB），使用下方按鈕匯入。僅檢查檔名與大小，不提供 BIOS 下載。</string>
     <string name="review_bios_imported">BIOS 已匯入，重新開啟 PS1 遊戲後生效。</string>
     <string name="review_bios_failed">匯入失敗：請確認 BIOS 檔名、512 KiB 大小及可用儲存空間。</string>
+    <string name="play_nes_reduce_slowdown">減少 FC 原機掉速</string>
+    <string name="play_nes_reduce_slowdown_hint">僅套用這款遊戲。增加模擬 FC 的運算時間，嘗試改善物件多時的變慢；不會直接提高整體播放倍率。若出現畫面或聲音異常，請關閉。</string>
 </resources>

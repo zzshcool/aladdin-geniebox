@@ -21,6 +21,7 @@ class NativeEmulator {
     external fun nativeUnloadGame()
     external fun nativeRunFrame(presentFrame: Boolean = true)
     external fun nativeReset()
+    external fun nativeSetNesOverclocking(enabled: Boolean)
     external fun nativeSerializeState(): ByteArray?
     external fun nativeUnserializeState(stateData: ByteArray): Boolean
     external fun nativeGetSramData(): ByteArray?

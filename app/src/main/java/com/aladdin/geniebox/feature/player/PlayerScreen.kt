@@ -70,6 +70,7 @@ fun PlayerScreen(
     val compatibleSaves = availableSaves.filter { it.coreId == core?.coreId && it.coreVersion == core?.version && it.formatVersion == 1 }
     val playbackSpeed by app.emulatorSession.playbackSpeed.collectAsState()
     val muteFastForward by app.emulatorSession.muteFastForward.collectAsState()
+    val nesReduceSlowdown by app.emulatorSession.nesReduceSlowdown.collectAsState()
     var showResumePrompt by remember(game.id) { mutableStateOf(false) }
     var resumeTimestamp by remember(game.id) { mutableLongStateOf(0L) }
 
@@ -93,13 +94,11 @@ fun PlayerScreen(
     var selectedSaveSlot by remember { mutableIntStateOf(1) }
     var pauseSection by remember { mutableIntStateOf(0) }
     var pendingOverwriteSlot by remember { mutableStateOf<Int?>(null) }
-    var showRestartConfirmation by remember { mutableStateOf(false) }
     var pauseStatusText by remember { mutableStateOf("") }
     var operationInProgress by remember { mutableStateOf(false) }
     val checkpointSaving by app.emulatorSession.checkpointSaving.collectAsState()
     val menuBusy = operationInProgress || checkpointSaving
     var allowDiscard by remember { mutableStateOf(false) }
-    var showDiscardConfirmation by remember { mutableStateOf(false) }
     val resumeFocusRequester = remember { FocusRequester() }
     var totalDiscs by remember { mutableIntStateOf(0) }
     var currentDiscIndex by remember { mutableIntStateOf(0) }
@@ -231,7 +230,7 @@ fun PlayerScreen(
     // 返回鍵攔截：優先開啟暫停選單，避免直接退出
     BackHandler {
         if (showResumePrompt) return@BackHandler
-        if (menuBusy || showDiscardConfirmation || showRestartConfirmation || pendingOverwriteSlot != null) return@BackHandler
+        if (menuBusy || pendingOverwriteSlot != null) return@BackHandler
         if (showPauseMenu) {
             showPauseMenu = false
             app.inputManager.setMenuIntercept(false)
@@ -451,13 +450,28 @@ fun PlayerScreen(
                     text = AppLanguage.text(R.string.ui_restart),
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !menuBusy,
-                    onClick = { showRestartConfirmation = true }
+                    onClick = {
+                        runMenuOperation {
+                            app.emulatorSession.reset()
+                            showPauseMenu = false
+                            app.inputManager.setMenuIntercept(false)
+                            app.emulatorSession.resume()
+                        }
+                    }
                 )
                 FocusableButton(
                     text = AppLanguage.text(R.string.ui_leave_without_saving),
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !menuBusy,
-                    onClick = { showDiscardConfirmation = true }
+                    onClick = {
+                        runMenuOperation {
+                            val result = app.emulatorSession.stopGame(forceDiscard = true)
+                            if (result.success) {
+                                app.inputManager.setMenuIntercept(false)
+                                onExitGame()
+                            }
+                        }
+                    }
                 )
             }
             val speedActions: @Composable ColumnScope.() -> Unit = {
@@ -479,6 +493,23 @@ fun PlayerScreen(
                     }
                 }
                 Text(AppLanguage.text(R.string.play_speed_hint), color = TextSecondary, fontSize = 12.sp)
+                if (game.platform == PlatformType.NES) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(AppLanguage.text(R.string.play_nes_reduce_slowdown), modifier = Modifier.weight(1f), color = TextPrimary)
+                        Switch(
+                            checked = nesReduceSlowdown,
+                            enabled = !menuBusy,
+                            onCheckedChange = { enabled ->
+                                runMenuOperation {
+                                    if (app.emulatorSession.setNesReduceSlowdown(game.id, enabled)) {
+                                        app.settingsRepository.setNesReduceSlowdown(game.id, enabled)
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    Text(AppLanguage.text(R.string.play_nes_reduce_slowdown_hint), color = TextSecondary, fontSize = 12.sp)
+                }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(AppLanguage.text(R.string.play_mute_fast_forward), modifier = Modifier.weight(1f), color = TextPrimary)
                     Switch(
@@ -670,51 +701,6 @@ fun PlayerScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { pendingOverwriteSlot = null }) { Text(AppLanguage.text(R.string.ux_cancel)) }
-                }
-            )
-        }
-        if (showRestartConfirmation) {
-            AlertDialog(
-                onDismissRequest = { showRestartConfirmation = false },
-                title = { Text(AppLanguage.text(R.string.ui_restart)) },
-                text = { Text(AppLanguage.text(R.string.polish_restart_warning)) },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showRestartConfirmation = false
-                        runMenuOperation {
-                            app.emulatorSession.reset()
-                            showPauseMenu = false
-                            app.inputManager.setMenuIntercept(false)
-                            app.emulatorSession.resume()
-                        }
-                    }) { Text(AppLanguage.text(R.string.ui_restart)) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showRestartConfirmation = false }) { Text(AppLanguage.text(R.string.ux_cancel)) }
-                }
-            )
-        }
-        if (showDiscardConfirmation) {
-            AlertDialog(
-                onDismissRequest = { if (!menuBusy) showDiscardConfirmation = false },
-                title = { Text(AppLanguage.text(R.string.ui_leave_without_saving)) },
-                text = { Text(AppLanguage.text(R.string.ux_discard_warning)) },
-                confirmButton = {
-                    TextButton(enabled = !menuBusy, onClick = {
-                        runMenuOperation {
-                            val result = app.emulatorSession.stopGame(forceDiscard = true)
-                            if (result.success) {
-                                showDiscardConfirmation = false
-                                app.inputManager.setMenuIntercept(false)
-                                onExitGame()
-                            }
-                        }
-                    }) { Text(AppLanguage.text(R.string.ux_confirm_leave)) }
-                },
-                dismissButton = {
-                    TextButton(enabled = !menuBusy, onClick = { showDiscardConfirmation = false }) {
-                        Text(AppLanguage.text(R.string.ux_cancel))
-                    }
                 }
             )
         }

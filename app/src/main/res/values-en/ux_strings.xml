@@ -69,4 +69,6 @@
     <string name="review_bios_hint">Provide your own scph5500.bin, scph5501.bin or scph5502.bin (512 KiB) using the button below. Only the filename and size are checked. BIOS downloads are not provided.</string>
     <string name="review_bios_imported">BIOS imported. Reopen the PS1 game to use it.</string>
     <string name="review_bios_failed">Import failed. Check the BIOS filename, 512 KiB size and available storage.</string>
+    <string name="play_nes_reduce_slowdown">Reduce NES hardware slowdown</string>
+    <string name="play_nes_reduce_slowdown_hint">Applies to this game only. Gives the emulated NES more processing time to reduce slowdown in busy scenes without directly increasing playback speed. Turn off if graphics or audio behave incorrectly.</string>
 </resources>

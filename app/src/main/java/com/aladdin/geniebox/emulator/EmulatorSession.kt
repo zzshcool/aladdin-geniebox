@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -59,6 +60,8 @@ class EmulatorSession(
     val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
     private val _muteFastForward = MutableStateFlow(true)
     val muteFastForward: StateFlow<Boolean> = _muteFastForward.asStateFlow()
+    private val _nesReduceSlowdown = MutableStateFlow(false)
+    val nesReduceSlowdown: StateFlow<Boolean> = _nesReduceSlowdown.asStateFlow()
     private val _checkpointError = MutableStateFlow<String?>(null)
     val checkpointError: StateFlow<String?> = _checkpointError.asStateFlow()
     private val _checkpointSaving = MutableStateFlow(false)
@@ -71,6 +74,16 @@ class EmulatorSession(
     fun setPlaybackSpeed(speed: Float) {
         require(speed in SettingsRepository.GAME_SPEEDS)
         _playbackSpeed.value = speed
+    }
+
+    suspend fun setNesReduceSlowdown(gameId: String, enabled: Boolean): Boolean = sessionMutex.withLock {
+        val game = currentGame ?: return@withLock false
+        if (!isRunning || game.id != gameId || game.platform != PlatformType.NES) return@withLock false
+        withContext(emulationDispatcher) {
+            nativeEmulator.nativeSetNesOverclocking(enabled)
+        }
+        _nesReduceSlowdown.value = enabled
+        true
     }
 
     private val sessionMutex = Mutex()
@@ -260,7 +273,11 @@ class EmulatorSession(
 
         // 5. 載入動態庫與遊戲 (生命週期收斂於專用 emulationDispatcher，解決 R2-06)
         _sessionState.value = EmulationSessionState.Loading(game.title)
+        val reduceNesSlowdown = game.platform == PlatformType.NES &&
+            SettingsRepository(context).nesReduceSlowdown(game.id).first()
         val (coreLoaded, gameLoaded) = withContext(emulationDispatcher) {
+            nativeEmulator.nativeSetNesOverclocking(reduceNesSlowdown)
+            _nesReduceSlowdown.value = reduceNesSlowdown
             val cLoaded = nativeEmulator.nativeLoadCore(coreFile.absolutePath)
             if (!cLoaded) return@withContext Pair(false, false)
 

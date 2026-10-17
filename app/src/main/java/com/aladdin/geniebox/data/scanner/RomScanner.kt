@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.aladdin.geniebox.data.db.dao.GameDao
 import com.aladdin.geniebox.data.db.dao.RomSourceDao
+import com.aladdin.geniebox.data.db.dao.romDocumentKey
 import com.aladdin.geniebox.data.db.entity.GameEntity
 import com.aladdin.geniebox.domain.model.EntryType
 import com.aladdin.geniebox.domain.model.PlatformType
@@ -70,10 +71,7 @@ class RomScanner(
 
             // 批次增量寫入資料庫
             if (discoveredGames.isNotEmpty()) {
-                // 每批 100 筆寫入，避免 SQLite 參數上限
-                discoveredGames.chunked(100).forEach { batch ->
-                    gameDao.insertOrUpdateGames(batch)
-                }
+                gameDao.upsertScannedGames(discoveredGames)
             }
 
             // 更新來源掃描時間
@@ -147,7 +145,7 @@ class RomScanner(
                     onFileScanned(name)
 
                     val relFilePath = if (currentRelPath.isEmpty()) name else "$currentRelPath/$name"
-                    val stableId = generateStableId(sourceId, relFilePath)
+                    val stableId = generateStableId(file.uri.toString())
                     val cover = coverMap[base.lowercase()]
                     val (pinyin, zhuyin) = PinyinZhuYinIndex.generateSearchIndex(base)
 
@@ -216,8 +214,8 @@ class RomScanner(
         return PlatformType.fromExtension(ext)
     }
 
-    private fun generateStableId(sourceId: String, relativePath: String): String {
-        val input = "$sourceId:$relativePath"
+    private fun generateStableId(documentUri: String): String {
+        val input = romDocumentKey(documentUri)
         val md = MessageDigest.getInstance("SHA-256")
         val bytes = md.digest(input.toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }.take(24)

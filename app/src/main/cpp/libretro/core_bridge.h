@@ -5,6 +5,7 @@
 #include <vector>
 #include <mutex>
 #include <memory>
+#include <atomic>
 #include "libretro.h"
 
 struct CoreCapabilities {
@@ -38,6 +39,7 @@ public:
 
     void runFrame();
     void reset();
+    void setNesOverclocking(bool enabled);
 
     bool serializeState(std::vector<uint8_t>& outBuffer);
     bool unserializeState(const std::vector<uint8_t>& inBuffer);
@@ -73,6 +75,8 @@ private:
     void* mCoreHandle = nullptr;
     bool mGameLoaded = false;
     std::mutex mSessionMutex;
+    std::atomic<bool> mNesOverclocking{false};
+    std::atomic<bool> mCoreOptionsUpdated{false};
 
     std::string mSystemDir;
     std::string mSaveDir;

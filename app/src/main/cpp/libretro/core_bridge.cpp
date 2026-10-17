@@ -28,6 +28,12 @@ static void coreLogPrintf(enum retro_log_level level, const char *fmt, ...) {
 
 CoreBridge::CoreBridge() = default;
 
+void CoreBridge::setNesOverclocking(bool enabled) {
+    if (mNesOverclocking.exchange(enabled) != enabled) {
+        mCoreOptionsUpdated.store(true);
+    }
+}
+
 CoreBridge::~CoreBridge() {
     unloadGame();
     unloadCore();
@@ -308,7 +314,16 @@ bool CoreBridge::envCallback(unsigned cmd, void* data) {
                 var->value = "enabled";
                 return true;
             }
+            if (strcmp(var->key, "fceumm_overclocking") == 0) {
+                var->value = cb.mNesOverclocking.load() ? "2x-Postrender" : "disabled";
+                return true;
+            }
             return false;
+        }
+        case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
+            if (!data) return false;
+            *static_cast<bool*>(data) = cb.mCoreOptionsUpdated.exchange(false);
+            return true;
         }
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
         case RETRO_ENVIRONMENT_SET_VARIABLES:
