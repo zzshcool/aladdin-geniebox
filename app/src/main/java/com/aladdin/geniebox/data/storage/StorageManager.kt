@@ -14,12 +14,19 @@ import androidx.room.withTransaction
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.json.JSONArray
+import com.aladdin.geniebox.data.db.entity.SaveMetadataEntity
+import com.aladdin.geniebox.data.db.entity.FavoriteEntity
+import java.security.MessageDigest
+import android.system.Os
+import android.system.OsConstants
 
 class StorageManager(private val context: Context) {
 
     companion object {
         private const val TAG = "StorageManager"
         private const val MIN_FREE_BYTES = 50 * 1024 * 1024L // 50 MB 安全空間預警
+        private const val MAX_BACKUP_JSON_BYTES = 8 * 1024 * 1024L
+        private const val MAX_DISC_REFERENCE_DEPTH = 64
     }
 
     val systemDir: File get() = File(context.filesDir, "system").apply { mkdirs() }
@@ -30,6 +37,266 @@ class StorageManager(private val context: Context) {
     val thumbnailsDir: File get() = File(context.cacheDir, "thumbnails").apply { mkdirs() }
 
     private val ppssppDeployLock = Any()
+    private val restoreLock = Any()
+    private val restoreDir get() = File(context.filesDir, ".backup-restore")
+    private val identityFile get() = File(context.filesDir, "backup-identities.json")
+
+    private fun writeSynced(file: File, bytes: ByteArray) {
+        file.parentFile?.mkdirs()
+        FileOutputStream(file).use { output -> output.write(bytes); output.fd.sync() }
+    }
+
+    private fun copySynced(source: File, target: File) {
+        target.parentFile?.mkdirs()
+        source.inputStream().use { input ->
+            FileOutputStream(target).use { output -> input.copyTo(output); output.fd.sync() }
+        }
+        syncDirectory(target.parentFile!!)
+    }
+
+    private fun syncDirectory(dir: File) {
+        val fd = Os.open(dir.absolutePath, OsConstants.O_RDONLY, 0)
+        try { Os.fsync(fd) } finally { Os.close(fd) }
+    }
+
+    private fun replaceFrom(source: File, target: File) {
+        val temp = File(target.parentFile, "${target.name}.restore-tmp")
+        copySynced(source, temp)
+        Os.rename(temp.absolutePath, target.absolutePath)
+        syncDirectory(target.parentFile!!)
+    }
+
+    private fun finishRestore() {
+        val retired = File(context.filesDir, ".backup-restore-complete-${java.util.UUID.randomUUID()}")
+        Os.rename(restoreDir.absolutePath, retired.absolutePath)
+        syncDirectory(context.filesDir)
+        retired.deleteRecursively()
+    }
+
+    private fun confinedSaveFile(base: File, path: String): File {
+        require(path.startsWith("saves/") || path.startsWith("states/")) { "Invalid save path" }
+        val file = File(base, path).canonicalFile
+        require(listOf("saves", "states").any {
+            file.path.startsWith(File(base, it).canonicalPath + File.separator)
+        }) { "Invalid save path" }
+        return file
+    }
+
+    private fun metadataJson(saves: List<SaveMetadataEntity>, favorites: List<FavoriteEntity>): JSONObject =
+        JSONObject().put("saves", JSONArray().apply {
+            saves.forEach { s -> put(JSONObject().put("id", s.id).put("gameId", s.gameId)
+                .put("coreId", s.coreId).put("coreVersion", s.coreVersion).put("saveType", s.saveType)
+                .put("slotIndex", s.slotIndex).put("filePath", s.filePath)
+                .put("thumbnailPath", s.thumbnailPath ?: JSONObject.NULL).put("sizeBytes", s.sizeBytes)
+                .put("timestamp", s.timestamp).put("formatVersion", s.formatVersion)) }
+        }).put("favorites", JSONArray().apply {
+            favorites.forEach { f -> put(JSONObject().put("gameId", f.gameId).put("addedTime", f.addedTime)) }
+        })
+
+    private fun writeRestoreJournal(
+        staged: List<Pair<File, File>>,
+        incoming: Pair<List<SaveMetadataEntity>, List<FavoriteEntity>>?
+    ) {
+        val db = (context.applicationContext as com.aladdin.geniebox.app.GenieApplication).database
+        val saveIds = incoming?.first?.map { it.id }.orEmpty().toSet()
+        val favoriteIds = incoming?.second?.map { it.gameId }.orEmpty().toSet()
+        val old = runBlocking {
+            metadataJson(db.saveMetadataDao().getAllSavesSync().filter { it.id in saveIds },
+                db.favoriteDao().getAllFavoritesSync().filter { it.gameId in favoriteIds })
+        }
+        val journal = JSONObject().put("oldMetadata", old)
+            .put("saveIds", JSONArray(saveIds.toList())).put("favoriteIds", JSONArray(favoriteIds.toList()))
+            .put("files", JSONArray().apply {
+                staged.forEach { (_, target) -> put(JSONObject()
+                    .put("path", target.relativeTo(context.filesDir).invariantSeparatorsPath)
+                    .put("existed", target.exists())) }
+            })
+        val bytes = journal.toString().toByteArray(Charsets.UTF_8)
+        require(bytes.size <= MAX_BACKUP_JSON_BYTES) { "Restore journal too large" }
+        val temp = File(restoreDir, "journal.tmp")
+        writeSynced(temp, bytes)
+        Os.rename(temp.absolutePath, File(restoreDir, "journal.json").absolutePath)
+        syncDirectory(restoreDir)
+        syncDirectory(context.filesDir)
+    }
+
+    /** Recover files and metadata together before any game can read or write saves. */
+    fun recoverPendingRestore(): Unit = synchronized(restoreLock) {
+        if (!restoreDir.exists()) return@synchronized
+        val journalFile = File(restoreDir, "journal.json")
+        if (File(restoreDir, "committed").exists() || !journalFile.exists()) {
+            finishRestore()
+            return@synchronized
+        }
+        require(journalFile.length() <= MAX_BACKUP_JSON_BYTES)
+        val journal = JSONObject(journalFile.readText())
+        val files = journal.getJSONArray("files")
+        for (index in 0 until files.length()) {
+            val entry = files.getJSONObject(index)
+            val path = entry.getString("path")
+            val target = if (path == identityFile.name) identityFile else confinedSaveFile(context.filesDir, path)
+            if (entry.getBoolean("existed")) {
+                replaceFrom(File(restoreDir, path), target)
+            } else if (target.exists()) {
+                check(target.delete()) { "Cannot remove incomplete restore file" }
+                syncDirectory(target.parentFile!!)
+            }
+        }
+        val old = parseAndValidateMetadata(journal.getJSONObject("oldMetadata").toString(), context.filesDir)
+        val saves = journal.getJSONArray("saveIds").let { array -> (0 until array.length()).map { array.getString(it) } }
+        val favorites = journal.getJSONArray("favoriteIds").let { array -> (0 until array.length()).map { array.getString(it) } }
+        val db = (context.applicationContext as com.aladdin.geniebox.app.GenieApplication).database
+        runBlocking {
+            db.withTransaction {
+                saves.chunked(500).forEach { db.gameDao().removeRestoredSaves(it) }
+                favorites.chunked(500).forEach { db.gameDao().removeDocumentFavorites(it) }
+                db.saveMetadataDao().insertAllSaves(old.first)
+                db.favoriteDao().insertAllFavorites(old.second)
+            }
+        }
+        finishRestore()
+    }
+
+    private fun readIdentities(): JSONObject {
+        if (!identityFile.exists()) return JSONObject().put("games", JSONArray()).put("bindings", JSONObject())
+        require(identityFile.length() <= MAX_BACKUP_JSON_BYTES)
+        return JSONObject(identityFile.readText())
+    }
+
+    fun backupAliases(gameId: String): List<String> = synchronized(restoreLock) {
+        val aliases = readIdentities().optJSONObject("bindings")?.optJSONArray(gameId) ?: return@synchronized emptyList()
+        (0 until aliases.length()).map { aliases.getString(it) }
+    }
+
+    private fun fingerprint(game: com.aladdin.geniebox.data.db.entity.GameEntity): String? = try {
+        val app = context.applicationContext as com.aladdin.geniebox.app.GenieApplication
+        val digest = MessageDigest.getInstance("SHA-256")
+        val visited = mutableSetOf<String>()
+        fun append(uri: android.net.Uri, name: String, parent: androidx.documentfile.provider.DocumentFile?) {
+            val key = com.aladdin.geniebox.data.db.dao.romDocumentKey(uri.toString())
+            check(visited.add(key) && visited.size <= MAX_DISC_REFERENCE_DEPTH) { "Cyclic or oversized disc set" }
+            val extension = name.substringAfterLast('.', "").lowercase()
+            val isPlaylist = extension == "cue" || extension == "m3u"
+            val text = if (isPlaylist) ByteArrayOutputStream() else null
+            val member = MessageDigest.getInstance("SHA-256")
+            val input = context.contentResolver.openInputStream(uri) ?: error("ROM unavailable")
+            input.use {
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = it.read(buffer)
+                    if (read < 0) break
+                    member.update(buffer, 0, read)
+                    if (text != null) {
+                        require(text.size().toLong() + read <= MAX_BACKUP_JSON_BYTES) { "Disc playlist too large" }
+                        text.write(buffer, 0, read)
+                    }
+                }
+            }
+            digest.update(member.digest())
+            if (text != null) {
+                val content = text.toString("UTF-8")
+                val references = if (extension == "cue") app.safBridge.parseCueReferencedFiles(content)
+                    else app.safBridge.parseM3uEntries(content)
+                for (reference in references.distinct()) {
+                    val path = reference.replace('\\', '/')
+                    require(!path.startsWith("/") && !path.contains("..")) { "Invalid disc reference" }
+                    val parts = path.split('/').filter { it.isNotEmpty() }
+                    require(parts.isNotEmpty())
+                    var directory = parent ?: error("Disc directory unavailable")
+                    parts.dropLast(1).forEach { segment ->
+                        directory = directory.findFile(segment)?.takeIf { it.isDirectory }
+                            ?: error("Disc directory unavailable")
+                    }
+                    val file = directory.findFile(parts.last()) ?: error("Disc member unavailable")
+                    append(file.uri, parts.last(), directory)
+                }
+            }
+            visited.remove(key)
+        }
+        val name = File(game.relativePath).name
+        val needsParent = name.substringAfterLast('.', "").lowercase() in setOf("cue", "m3u")
+        val parent = if (needsParent) {
+            val source = runBlocking { app.romSourceRepository.getSource(game.sourceId) }
+                ?: error("ROM source unavailable")
+            app.safBridge.resolveParentDirDoc(android.net.Uri.parse(source.treeUri), game.relativePath)
+        } else null
+        append(android.net.Uri.parse(game.documentUri), name, parent)
+        digest.digest().joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot fingerprint ROM", e)
+        null
+    }
+
+    private fun mergeIdentities(first: JSONObject, second: JSONObject): JSONObject {
+        val records = linkedMapOf<String, JSONObject>()
+        listOf(first, second).forEach { root ->
+            val games = root.optJSONArray("games") ?: JSONArray()
+            for (index in 0 until games.length()) {
+                val record = games.getJSONObject(index)
+                records[record.getString("id")] = record
+            }
+        }
+        return JSONObject().put("games", JSONArray(records.values.toList()))
+            .put("bindings", first.optJSONObject("bindings") ?: JSONObject())
+            .put("checked", first.optJSONObject("checked") ?: JSONObject())
+    }
+
+    private fun exportGameIdentities(): JSONObject {
+        val db = (context.applicationContext as com.aladdin.geniebox.app.GenieApplication).database
+        val games = runBlocking { db.gameDao().getIndexedGames() }.map { it.entry.game }
+        val records = JSONArray()
+        games.forEach { game ->
+            if (game.isAvailable) fingerprint(game)?.let { hash ->
+                records.put(JSONObject().put("id", game.id).put("platform", game.platform)
+                    .put("size", game.sizeBytes).put("sha256", hash))
+            }
+        }
+        return mergeIdentities(readIdentities(), JSONObject().put("games", records))
+    }
+
+    private fun bindIdentities(root: JSONObject) {
+        val records = root.getJSONArray("games")
+        val db = (context.applicationContext as com.aladdin.geniebox.app.GenieApplication).database
+        val games = runBlocking { db.gameDao().getIndexedGames() }.map { it.entry.game }
+        val bindings = root.optJSONObject("bindings") ?: JSONObject()
+        val checked = root.optJSONObject("checked") ?: JSONObject()
+        val revision = MessageDigest.getInstance("SHA-256").digest(records.toString().toByteArray()).joinToString("") { "%02x".format(it) }
+        games.filter { it.isAvailable }.forEach { game ->
+            val signature = "${game.sizeBytes}:${game.lastModified}:$revision"
+            if (game.entryType !in setOf("CUE_BIN", "M3U_DISC_SET") &&
+                game.lastModified > 0 && checked.optString(game.id) == signature) return@forEach
+            val candidates = (0 until records.length()).map { records.getJSONObject(it) }
+                .filter { it.getString("platform") == game.platform && it.getLong("size") == game.sizeBytes }
+            if (candidates.isNotEmpty()) fingerprint(game)?.let { hash ->
+                val aliases = candidates.filter { it.getString("sha256") == hash }.map { it.getString("id") }.distinct()
+                bindings.put(game.id, JSONArray(aliases))
+                checked.put(game.id, signature)
+            }
+        }
+        root.put("bindings", bindings).put("checked", checked)
+    }
+
+    fun reconcileBackupGames(): Unit = synchronized(restoreLock) {
+        if (!identityFile.exists()) return@synchronized
+        recoverPendingRestore()
+        val identities = readIdentities()
+        bindIdentities(identities)
+        val bytes = identities.toString().toByteArray(Charsets.UTF_8)
+        require(bytes.size <= MAX_BACKUP_JSON_BYTES)
+        check(atomicWrite(identityFile, bytes)) { "Cannot persist ROM backup bindings" }
+        val db = (context.applicationContext as com.aladdin.geniebox.app.GenieApplication).database
+        runBlocking {
+            val favorites = db.favoriteDao().getAllFavoritesSync()
+            val bindings = identities.getJSONObject("bindings")
+            bindings.keys().forEach { gameId ->
+                val aliases = bindings.getJSONArray(gameId)
+                val match = favorites.filter { favorite ->
+                    (0 until aliases.length()).any { aliases.getString(it) == favorite.gameId }
+                }.maxByOrNull { it.addedTime }
+                if (match != null) db.favoriteDao().addFavorite(match.copy(gameId = gameId))
+            }
+        }
+    }
 
     /**
      * 部署 PPSSPP 執行期資源至 files/system/PPSSPP
@@ -131,11 +398,11 @@ class StorageManager(private val context: Context) {
 
             // 若舊檔存在，先建立備份
             if (targetFile.exists()) {
-                if (backupFile.exists()) backupFile.delete()
-                targetFile.renameTo(backupFile)
+                android.system.Os.rename(targetFile.absolutePath, backupFile.absolutePath)
             }
 
             val success = tempFile.renameTo(targetFile)
+            if (success) syncDirectory(parent)
             if (!success) {
                 // 替換失敗，還原備份
                 if (backupFile.exists()) backupFile.renameTo(targetFile)
@@ -149,6 +416,68 @@ class StorageManager(private val context: Context) {
             }
             if (tempFile.exists()) tempFile.delete()
             false
+        }
+    }
+
+    fun writeSaveState(file: File, data: ByteArray, previous: SaveMetadata?, metadata: SaveMetadataEntity): Boolean =
+        synchronized(restoreLock) {
+            recoverPendingRestore()
+            val targets = listOf(file, File("$file.bak"), File("$file.previous"))
+            var applying = false
+            var committed = false
+            try {
+                check(checkStorageAvailable(data.size + targets.sumOf { it.length() } + MIN_FREE_BYTES))
+                check(restoreDir.mkdirs())
+                targets.filter { it.exists() }.forEach { target ->
+                    copySynced(target, File(restoreDir, target.relativeTo(context.filesDir).path))
+                }
+                restoreDir.walkBottomUp().filter { it.isDirectory }.forEach { syncDirectory(it) }
+                writeRestoreJournal(targets.map { it to it }, listOf(metadata) to emptyList())
+                applying = true
+                if (previous != null) check(snapshotState(file, previous.coreVersion,
+                    previous.formatVersion, previous.timestamp))
+                check(atomicWrite(file, data))
+                val db = (context.applicationContext as com.aladdin.geniebox.app.GenieApplication).database
+                runBlocking { db.saveMetadataDao().insertOrUpdateSave(metadata) }
+                writeSynced(File(restoreDir, "committed"), byteArrayOf(1))
+                syncDirectory(restoreDir)
+                committed = true
+                finishRestore()
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "State transaction failed", e)
+                if (committed) return@synchronized true
+                if (applying) recoverPendingRestore() else if (restoreDir.exists()) finishRestore()
+                false
+            }
+        }
+
+    // 保留上一份手動存檔及其核心版本；串流複製，避免額外載入整份狀態到記憶體。
+    fun snapshotState(file: File, coreVersion: String, formatVersion: Int, timestamp: Long): Boolean {
+        val source = file.takeIf { it.isFile } ?: File("${file.absolutePath}.bak")
+        if (!source.isFile || source.length() !in 1..Int.MAX_VALUE.toLong() ||
+            !checkStorageAvailable(source.length() + MIN_FREE_BYTES)) return false
+        val snapshot = File("${file.absolutePath}.previous")
+        val temp = File("${snapshot.absolutePath}.${java.util.UUID.randomUUID()}.tmp")
+        return try {
+            FileOutputStream(temp).use { stream ->
+                val output = java.io.DataOutputStream(stream)
+                output.writeUTF(coreVersion)
+                output.writeInt(formatVersion)
+                output.writeLong(timestamp)
+                output.writeInt(source.length().toInt())
+                FileInputStream(source).use { it.copyTo(output) }
+                output.flush()
+                stream.fd.sync()
+            }
+            Os.rename(temp.absolutePath, snapshot.absolutePath)
+            syncDirectory(snapshot.parentFile!!)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Cannot preserve previous state", e)
+            false
+        } finally {
+            temp.delete()
         }
     }
 
@@ -210,6 +539,7 @@ class StorageManager(private val context: Context) {
      */
     fun exportBackup(outputStream: OutputStream): Boolean {
         return try {
+            recoverPendingRestore()
             val app = context.applicationContext as? com.aladdin.geniebox.app.GenieApplication
             val db = app?.database
 
@@ -240,21 +570,13 @@ class StorageManager(private val context: Context) {
                 }
 
                 // 匯出 metadata_records.json (R2-14, R3-05)
-                val metadataJson = buildString {
-                    append("{\n  \"saves\": [\n")
-                    saveEntities.forEachIndexed { idx, s ->
-                        append("    {\"id\": \"${s.id}\", \"gameId\": \"${s.gameId}\", \"coreId\": \"${s.coreId}\", \"coreVersion\": \"${s.coreVersion}\", \"saveType\": \"${s.saveType}\", \"slotIndex\": ${s.slotIndex}, \"filePath\": \"${s.filePath.replace('\\', '/')}\", \"thumbnailPath\": ${if (s.thumbnailPath != null) "\"${s.thumbnailPath.replace('\\', '/')}\"" else "null"}, \"sizeBytes\": ${s.sizeBytes}, \"timestamp\": ${s.timestamp}, \"formatVersion\": ${s.formatVersion}}")
-                        if (idx < saveEntities.size - 1) append(",")
-                        append("\n")
-                    }
-                    append("  ],\n  \"favorites\": [\n")
-                    favEntities.forEachIndexed { idx, f ->
-                        append("    {\"gameId\": \"${f.gameId}\", \"addedTime\": ${f.addedTime}}")
-                        if (idx < favEntities.size - 1) append(",")
-                        append("\n")
-                    }
-                    append("  ]\n}")
-                }
+                val metadataJson = metadataJson(saveEntities, favEntities).toString()
+                val identities = exportGameIdentities().toString().toByteArray(Charsets.UTF_8)
+                require(metadataJson.toByteArray(Charsets.UTF_8).size <= MAX_BACKUP_JSON_BYTES)
+                require(identities.size <= MAX_BACKUP_JSON_BYTES)
+                zos.putNextEntry(ZipEntry("backup-identities.json"))
+                zos.write(identities)
+                zos.closeEntry()
                 zos.putNextEntry(ZipEntry("metadata_records.json"))
                 zos.write(metadataJson.toByteArray(Charsets.UTF_8))
                 zos.closeEntry()
@@ -299,13 +621,14 @@ class StorageManager(private val context: Context) {
      * 2. 安全建立 rollback 快照：備份檔先寫入 .tmp 再 rename，若備份準備中途失敗（如磁碟空間不足），絕不執行回復，避免以殘缺備份覆寫原檔。
      * 3. 協調式原子套用：覆寫檔案與資料庫以 Room withTransaction 共同協調；若發生任何例外，刪除新產物並自完整快照還原；若回滾異常則保留快照副本，防止資料損失。
      */
-    fun importBackup(inputStream: InputStream): Boolean {
+    fun importBackup(inputStream: InputStream): Boolean = synchronized(restoreLock) {
+        recoverPendingRestore()
         val destBase = context.filesDir
         val tempRestoreDir = File(context.cacheDir, "backup-restore-temp").apply {
             if (exists()) deleteRecursively()
             mkdirs()
         }
-        val rollbackDir = File(context.cacheDir, "backup-rollback-${System.currentTimeMillis()}").apply {
+        val rollbackDir = restoreDir.apply {
             if (exists()) deleteRecursively()
             mkdirs()
         }
@@ -318,10 +641,8 @@ class StorageManager(private val context: Context) {
 
         // 追蹤階段與受影響檔案，明確區分準備失敗與套用失敗 (R4-01)
         var isApplying = false
-        val backedUpOriginalFiles = mutableListOf<Pair<File, File>>() // (targetFile, backupFile)
-        val newlyCreatedTargets = mutableListOf<File>()
 
-        return try {
+        return@synchronized try {
             // 階段 1.1：解壓至臨時安全目錄並檢查防護
             ZipInputStream(BufferedInputStream(inputStream)).use { zis ->
                 var entry: ZipEntry? = zis.nextEntry
@@ -332,57 +653,67 @@ class StorageManager(private val context: Context) {
                     }
 
                     val name = entry.name.replace('\\', '/')
-                    // 防路徑穿越
-                    if (name.contains("..") || name.startsWith("/")) {
-                        Log.w(TAG, "Skipping malicious entry: $name")
-                        entry = zis.nextEntry
-                        continue
-                    }
-
-                    if (name == "metadata_records.json") {
-                        val metaTarget = File(tempRestoreDir, "metadata_records.json")
-                        FileOutputStream(metaTarget).use { zis.copyTo(it) }
-                        metadataFile = metaTarget
-                    } else if (name == "manifest.json") {
-                        val manifestContent = zis.bufferedReader(Charsets.UTF_8).readText()
-                        Log.i(TAG, "Found backup manifest: $manifestContent")
-                    } else if (name.startsWith("saves/") || name.startsWith("states/")) {
-                        val outFile = File(tempRestoreDir, name)
-                        if (entry.isDirectory) {
-                            outFile.mkdirs()
-                        } else {
-                            outFile.parentFile?.mkdirs()
-                            FileOutputStream(outFile).use { fos ->
-                                val buf = ByteArray(32 * 1024)
-                                var read: Int
-                                while (zis.read(buf).also { read = it } != -1) {
-                                    totalExtractedBytes += read
-                                    if (totalExtractedBytes > maxAllowedBytes) {
-                                        throw IllegalStateException("Zip bomb protection triggered: $totalExtractedBytes bytes")
-                                    }
-                                    fos.write(buf, 0, read)
-                                }
-                                fos.flush()
-                            }
+                    require(!name.contains("..") && !name.startsWith("/")) { "Invalid backup path" }
+                    val isJson = name in setOf("metadata_records.json", "manifest.json", "backup-identities.json")
+                    val accepted = isJson || name.startsWith("saves/") || name.startsWith("states/")
+                    val outFile = if (accepted && !entry.isDirectory) File(tempRestoreDir, name) else null
+                    outFile?.parentFile?.mkdirs()
+                    val output = outFile?.outputStream()
+                    try {
+                        val buffer = ByteArray(32 * 1024)
+                        var entryBytes = 0L
+                        while (true) {
+                            val read = zis.read(buffer)
+                            if (read < 0) break
+                            totalExtractedBytes += read
+                            entryBytes += read
+                            require(totalExtractedBytes <= maxAllowedBytes) { "Backup size limit exceeded" }
+                            require(!isJson || entryBytes <= MAX_BACKUP_JSON_BYTES) { "Backup JSON too large" }
+                            output?.write(buffer, 0, read)
                         }
+                    } finally {
+                        output?.close()
                     }
+                    if (name == "metadata_records.json") metadataFile = outFile
                     zis.closeEntry()
                     entry = zis.nextEntry
                 }
             }
 
             // 階段 1.2：在套用前完整解析並校驗 metadata 實體（saves 與 favorites 全量欄位檢驗）(R4-02)
-            val parsedMetadata: Pair<List<com.aladdin.geniebox.data.db.entity.SaveMetadataEntity>, List<com.aladdin.geniebox.data.db.entity.FavoriteEntity>>? =
+            var parsedMetadata: Pair<List<com.aladdin.geniebox.data.db.entity.SaveMetadataEntity>, List<com.aladdin.geniebox.data.db.entity.FavoriteEntity>>? =
                 if (metadataFile != null && metadataFile!!.exists()) {
                     parseAndValidateMetadata(metadataFile!!.readText(Charsets.UTF_8), destBase)
                 } else null
+
+            val incomingIdentities = File(tempRestoreDir, "backup-identities.json")
+            if (incomingIdentities.isFile) {
+                val merged = mergeIdentities(readIdentities(), JSONObject(incomingIdentities.readText()))
+                bindIdentities(merged)
+                incomingIdentities.writeText(merged.toString())
+                val favorites = parsedMetadata?.second?.toMutableList()
+                if (favorites != null) {
+                    val bindings = merged.getJSONObject("bindings")
+                    val restored = favorites.toList()
+                    bindings.keys().forEach { currentId ->
+                        val aliases = bindings.getJSONArray(currentId)
+                        val times = restored.filter { favorite ->
+                            (0 until aliases.length()).any { aliases.getString(it) == favorite.gameId }
+                        }.map { it.addedTime }
+                        if (times.isNotEmpty()) favorites.add(
+                            com.aladdin.geniebox.data.db.entity.FavoriteEntity(currentId, times.max())
+                        )
+                    }
+                    parsedMetadata = parsedMetadata?.let { it.first to favorites.distinctBy { f -> f.gameId } }
+                }
+            }
 
             // 階段 2：收集受影響檔案並建立可靠的 Rollback 副本 (R4-01)
             val stagedFiles = mutableListOf<Pair<File, File>>() // (tempFile, targetFile)
             tempRestoreDir.walkTopDown().forEach { file ->
                 if (file.isFile) {
                     val relPath = file.relativeTo(tempRestoreDir).path.replace('\\', '/')
-                    if (relPath.startsWith("saves/") || relPath.startsWith("states/")) {
+                    if (relPath.startsWith("saves/") || relPath.startsWith("states/") || relPath == "backup-identities.json") {
                         val targetFile = File(destBase, relPath)
                         stagedFiles.add(file to targetFile)
                     }
@@ -396,25 +727,20 @@ class StorageManager(private val context: Context) {
                     val backupTarget = File(rollbackDir, relPath)
                     val backupTmp = File(rollbackDir, "$relPath.tmp")
                     backupTarget.parentFile?.mkdirs()
-                    targetFile.copyTo(backupTmp, overwrite = true)
-                    if (!backupTmp.renameTo(backupTarget)) {
-                        backupTmp.copyTo(backupTarget, overwrite = true)
-                        backupTmp.delete()
-                    }
-                    backedUpOriginalFiles.add(targetFile to backupTarget)
+                    copySynced(targetFile, backupTmp)
+                    Os.rename(backupTmp.absolutePath, backupTarget.absolutePath)
                 }
             }
+            rollbackDir.walkBottomUp().filter { it.isDirectory }.forEach { syncDirectory(it) }
 
             // 階段 3：正式套用階段 (isApplying = true)
+            writeRestoreJournal(stagedFiles, parsedMetadata)
             isApplying = true
 
             // 3.1 覆寫檔案
             stagedFiles.forEach { (srcFile, targetFile) ->
-                if (!targetFile.exists()) {
-                    newlyCreatedTargets.add(targetFile)
-                }
                 targetFile.parentFile?.mkdirs()
-                srcFile.copyTo(targetFile, overwrite = true)
+                replaceFrom(srcFile, targetFile)
             }
 
             // 3.2 寫入 Room 資料庫，使用單一 transaction 共同提交 saves 與 favorites (R4-02)
@@ -422,7 +748,7 @@ class StorageManager(private val context: Context) {
                 val app = context.applicationContext as? com.aladdin.geniebox.app.GenieApplication
                     ?: throw IllegalStateException("GenieApplication not available")
                 val db = app.database
-                val (savesList, favList) = parsedMetadata
+                val (savesList, favList) = parsedMetadata!!
 
                 runBlocking {
                     db.withTransaction {
@@ -437,39 +763,22 @@ class StorageManager(private val context: Context) {
                 Log.i(TAG, "Successfully restored database metadata for ${savesList.size} saves and ${favList.size} favorites")
             }
 
+            writeSynced(File(rollbackDir, "committed"), byteArrayOf(1))
+            syncDirectory(rollbackDir)
             // 套用成功，清理暫存與 rollback 副本
-            rollbackDir.deleteRecursively()
+            finishRestore()
             tempRestoreDir.deleteRecursively()
             true
         } catch (e: Exception) {
             Log.e(TAG, "Import backup stream failed (isApplying=$isApplying)", e)
 
             if (isApplying) {
-                // 只有在進入套用階段後出錯，才執行安全回滾 (R4-01)
-                var rollbackSuccess = true
                 try {
-                    // 1. 刪除本次新建檔案
-                    newlyCreatedTargets.forEach { file ->
-                        if (file.exists()) file.delete()
-                    }
-                    // 2. 還原已備份的原始檔案
-                    backedUpOriginalFiles.forEach { (targetFile, backupFile) ->
-                        if (backupFile.exists()) {
-                            backupFile.copyTo(targetFile, overwrite = true)
-                        }
-                    }
-                    Log.i(TAG, "Rollback successfully restored all modified files")
+                    recoverPendingRestore()
                 } catch (re: Exception) {
-                    rollbackSuccess = false
-                    Log.e(TAG, "CRITICAL: Rollback failed during recovery, preserving rollback directory: ${rollbackDir.absolutePath}", re)
-                }
-
-                // 若回滾完全成功才刪除 rollbackDir；若回滾失敗保留現場副本以供恢復 (R4-01)
-                if (rollbackSuccess) {
-                    rollbackDir.deleteRecursively()
+                    Log.e(TAG, "Restore recovery pending; preserving durable snapshot", re)
                 }
             } else {
-                // 準備階段失敗，目標原檔根本未被修改，直接清除未完成快照，不觸發回滾 (R4-01)
                 rollbackDir.deleteRecursively()
             }
 
@@ -512,7 +821,7 @@ class StorageManager(private val context: Context) {
                     saveType == "NATIVE_SRAM" -> "saves/$coreId/$gameId.srm"
                     else -> "states/$coreId/$gameId/slot_$slotIndex.state"
                 }
-                val localFilePath = File(destBase, relPath).absolutePath
+                val localFilePath = confinedSaveFile(destBase, relPath).absolutePath
 
                 // 重建 thumbnailPath (R3-05, R3-09)
                 val rawThumb = if (obj.has("thumbnailPath") && !obj.isNull("thumbnailPath")) {
@@ -522,7 +831,7 @@ class StorageManager(private val context: Context) {
                 val localThumbPath = if (!rawThumb.isNullOrEmpty() && rawThumb != "null") {
                     when {
                         rawThumb.contains("/thumbnails/") -> File(destBase, "thumbnails/" + rawThumb.substringAfter("/thumbnails/")).absolutePath
-                        rawThumb.contains("/states/") -> File(destBase, "states/" + rawThumb.substringAfter("/states/")).absolutePath
+                        rawThumb.contains("/states/") -> confinedSaveFile(destBase, "states/" + rawThumb.substringAfter("/states/")).absolutePath
                         else -> File(destBase, rawThumb).absolutePath
                     }
                 } else null

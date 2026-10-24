@@ -1,6 +1,7 @@
 package com.aladdin.geniebox.ui.component
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -31,26 +32,27 @@ fun TvCard(
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.05f else 1.0f,
+        targetValue = if (isFocused) 1.025f else 1.0f,
         animationSpec = tween(durationMillis = 150),
         label = "tvCardScale"
     )
+    val surface by animateColorAsState(if (isFocused) CardDarkFocused else CardDark,
+        animationSpec = tween(150), label = "cardSurface")
 
     Card(
         modifier = modifier
             .scale(scale)
-            .focusable(interactionSource = interactionSource)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick
             ),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(4.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isFocused) CardDarkFocused else CardDark
+            containerColor = surface
         ),
-        border = if (isFocused) BorderStroke(2.5.dp, AladdinGold) else BorderStroke(1.dp, DividerDark),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (isFocused) 8.dp else 2.dp)
+        border = if (isFocused) BorderStroke(2.dp, AladdinGold) else BorderStroke(1.dp, DividerDark.copy(alpha = 0.6f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             content(isFocused)
@@ -70,7 +72,7 @@ fun FocusableButton(
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.06f else 1.0f,
+        targetValue = if (isFocused && enabled) 1.015f else 1.0f,
         animationSpec = tween(durationMillis = 120),
         label = "btnScale"
     )
@@ -78,20 +80,19 @@ fun FocusableButton(
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier
-            .scale(scale)
-            .focusable(enabled = enabled, interactionSource = interactionSource),
+        modifier = modifier.heightIn(min = 48.dp).scale(scale),
         interactionSource = interactionSource,
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(4.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = when {
                 isFocused -> AladdinGold
-                isPrimary -> AladdinGold.copy(alpha = 0.85f)
-                else -> CardDarkFocused
+                isPrimary -> CardDarkFocused
+                else -> CardDark
             },
-            contentColor = if (isFocused || isPrimary) BgDark else TextPrimary
+            contentColor = if (isFocused) BgDark else TextPrimary
         ),
-        border = if (isFocused) BorderStroke(2.dp, AladdinGoldLight) else BorderStroke(1.dp, DividerDark)
+        border = if (isFocused) BorderStroke(2.dp, AladdinGoldLight)
+            else BorderStroke(1.dp, if (isPrimary) AladdinGold else DividerDark)
     ) {
         Text(text = text)
     }

@@ -59,6 +59,7 @@ import androidx.compose.ui.draw.clip
 @Composable
 fun PlayerScreen(
     game: Game,
+    resumeDirectly: Boolean = false,
     onExitGame: () -> Unit
 ) {
     val app = GenieApplication.instance
@@ -76,18 +77,30 @@ fun PlayerScreen(
 
     val sessionState by app.emulatorSession.sessionState.collectAsState()
     val showFpsHud by app.settingsRepository.showFpsHud.collectAsState(initial = false)
-    val touchOpacity by remember(game.platform) { app.settingsRepository.touchOpacity(game.platform) }.collectAsState(initial = 0.65f)
-    val touchScale by remember(game.platform) { app.settingsRepository.touchScale(game.platform) }.collectAsState(initial = 1.0f)
+    val landscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val touchOpacity by remember(game.platform, landscape) { app.settingsRepository.touchOpacity(game.platform, landscape) }.collectAsState(initial = 0.65f)
+    val touchScale by remember(game.platform, landscape) { app.settingsRepository.touchScale(game.platform, landscape) }.collectAsState(initial = 1.0f)
     val touchVibration by remember(game.platform) { app.settingsRepository.touchVibration(game.platform) }.collectAsState(initial = true)
 
-    val touchEdgeInset by remember(game.platform) { app.settingsRepository.touchEdgeInset(game.platform) }.collectAsState(initial = 8f)
-    val touchBottomInset by remember(game.platform) { app.settingsRepository.touchBottomInset(game.platform) }.collectAsState(initial = 12f)
+    val touchEdgeInset by remember(game.platform, landscape) { app.settingsRepository.touchEdgeInset(game.platform, landscape) }.collectAsState(initial = 8f)
+    val touchBottomInset by remember(game.platform, landscape) { app.settingsRepository.touchBottomInset(game.platform, landscape) }.collectAsState(initial = 12f)
+    val savedLayout by remember(game.id, landscape) { app.settingsRepository.controlLayout(game.platform, landscape, game.id) }
+        .collectAsState(initial = emptyMap())
+    var editingControls by remember { mutableStateOf(false) }
+    var draftLayout by remember(game.id, landscape) { mutableStateOf<Map<String, Triple<Float, Float, Float>>>(emptyMap()) }
+    val gameAspect by remember(game.id) { app.settingsRepository.gameAspectRatio(game.id) }.collectAsState(initial = 0)
+    val gameFilter by remember(game.id) { app.settingsRepository.gameFilter(game.id) }.collectAsState(initial = false)
+    val rewindEnabled by remember(game.id) { app.settingsRepository.rewindEnabled(game.id) }.collectAsState(initial = false)
+    val frameSkip by remember(game.id) { app.settingsRepository.frameSkip(game.id) }.collectAsState(initial = false)
+    val rewindReady by app.emulatorSession.rewindReady.collectAsState()
+    val performance by app.emulatorSession.performance.collectAsState()
+
 
     val playerProfiles by app.inputManager.playerProfiles.collectAsState()
     val hasPhysicalGamepad = remember(playerProfiles) {
         playerProfiles.any { it.isConnected }
     }
-    val virtualGamepadMode by app.settingsRepository.virtualGamepadMode.collectAsState(initial = 0)
+    val virtualGamepadMode by app.settingsRepository.virtualGamepadMode.collectAsState(initial = 1)
     val isTvDevice = remember { app.settingsRepository.isTvDevice() }
 
     var showPauseMenu by remember { mutableStateOf(false) }
@@ -168,6 +181,31 @@ fun PlayerScreen(
         }
     }
 
+    fun quickAction(action: Int) {
+        if (menuBusy || editingControls || sessionState !is EmulationSessionState.Running && sessionState !is EmulationSessionState.Paused) return
+        app.emulatorSession.pause()
+        app.inputManager.setMenuIntercept(true)
+        showPauseMenu = true
+        runMenuOperation(saving = action == 0) {
+            val ok = when (action) {
+                0 -> saveWithPreview(1, stop = false)
+                1 -> app.emulatorSession.loadManualState(1)
+                else -> app.emulatorSession.rewind()
+            }
+            if (ok) {
+                app.emulatorSession.resume()
+                val resumed = app.emulatorSession.sessionState.value is EmulationSessionState.Running
+                showPauseMenu = !resumed
+                app.inputManager.setMenuIntercept(!resumed)
+            } else pauseStatusText = AppLanguage.text(R.string.opt_quick_failed)
+        }
+    }
+    val shortcut by rememberUpdatedState<(Int) -> Unit> { quickAction(it) }
+    DisposableEffect(game.id) {
+        app.inputManager.gameShortcutHandler = { shortcut(it) }
+        onDispose { app.inputManager.gameShortcutHandler = null }
+    }
+
     LaunchedEffect(showPauseMenu) {
         if (showPauseMenu) {
             totalDiscs = app.emulatorSession.getDiskCount()
@@ -191,7 +229,9 @@ fun PlayerScreen(
             it.slotIndex == 0 && it.coreId == core?.coreId && it.coreVersion == core?.version &&
                 it.formatVersion == 1
         }
-        if (app.settingsRepository.autoResume.first() && resumeSave != null) {
+        if (resumeDirectly && resumeSave != null) {
+            app.emulatorSession.startGame(game, autoLoadResumeState = true)
+        } else if (app.settingsRepository.autoResume.first() && resumeSave != null) {
             resumeTimestamp = resumeSave.timestamp
             showResumePrompt = true
             app.inputManager.setMenuIntercept(true)
@@ -201,7 +241,8 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(sessionState) {
-        if (sessionState is EmulationSessionState.Paused) {
+        if (sessionState is EmulationSessionState.Paused && !operationInProgress &&
+            app.emulatorSession.sessionState.value is EmulationSessionState.Paused) {
             showPauseMenu = true
             app.inputManager.setMenuIntercept(true)
         }
@@ -229,6 +270,7 @@ fun PlayerScreen(
 
     // 返回鍵攔截：優先開啟暫停選單，避免直接退出
     BackHandler {
+        if (editingControls) { editingControls = false; return@BackHandler }
         if (showResumePrompt) return@BackHandler
         if (menuBusy || pendingOverwriteSlot != null) return@BackHandler
         if (showPauseMenu) {
@@ -279,6 +321,7 @@ fun PlayerScreen(
                 scale = touchScale,
                 edgeInset = touchEdgeInset,
                 bottomInset = touchBottomInset,
+                layout = savedLayout,
                 vibrationEnabled = touchVibration
             )
         }
@@ -330,7 +373,9 @@ fun PlayerScreen(
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
                 Text(
-                    text = "FPS: ${"%.1f".format(runState.fps)} | Underruns: ${runState.audioUnderruns}",
+                    text = "FPS: ${"%.1f".format(runState.fps)} / ${"%.1f".format(performance.targetFps)}" +
+                        "\n${"%.1f".format(performance.frameMs)} ms · ${AppLanguage.text(R.string.opt_late_frames, performance.lateFrames)}" +
+                        "\nAudio: ${runState.audioUnderruns} / ${performance.outputUnderruns}",
                     fontSize = 12.sp,
                     color = AccentGreen,
                     fontWeight = FontWeight.Bold
@@ -419,6 +464,10 @@ fun PlayerScreen(
         // 暫停選單 (Pause Menu)
         if (showPauseMenu) {
             val selectedSave = availableSaves.firstOrNull { it.coreId == core?.coreId && it.slotIndex == selectedSaveSlot }
+            val previousTimestamp by produceState<Long?>(null, selectedSave, core?.version) {
+                value = null
+                selectedSave?.let { value = app.saveRepository.previousStateTimestamp(it.filePath, core?.version ?: "") }
+            }
             val primaryActions: @Composable ColumnScope.() -> Unit = {
                 FocusableButton(
                     text = AppLanguage.text(R.string.ui_resume_game),
@@ -475,6 +524,45 @@ fun PlayerScreen(
                 )
             }
             val speedActions: @Composable ColumnScope.() -> Unit = {
+                Text(AppLanguage.text(R.string.opt_game_video), color = TextPrimary)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    listOf(R.string.ui_original_default, R.string.ui_integer_scaling, R.string.ui_stretch_to_screen).forEachIndexed { index, label ->
+                        TextButton(enabled = !menuBusy, onClick = { runMenuOperation {
+                            app.settingsRepository.setGameVideo(game.id, index, gameFilter)
+                            app.emulatorSession.setAspectRatioMode(index)
+                        } }) { Text(AppLanguage.text(label), color = if (gameAspect == index) AladdinGold else TextSecondary) }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(AppLanguage.text(R.string.opt_filter), Modifier.weight(1f), color = TextPrimary)
+                    Switch(checked = gameFilter, enabled = !menuBusy, onCheckedChange = { value -> runMenuOperation {
+                        app.settingsRepository.setGameVideo(game.id, gameAspect, value)
+                        app.emulatorSession.setFilterMode(value)
+                    } })
+                }
+                FocusableButton(text = AppLanguage.text(R.string.opt_edit_controls), enabled = !menuBusy, onClick = {
+                    app.inputManager.releaseAllInputs(); draftLayout = savedLayout; editingControls = true
+                })
+                FocusableButton(text = AppLanguage.text(R.string.opt_reset_game_controls), enabled = !menuBusy,
+                    onClick = { runMenuOperation { app.settingsRepository.resetControlLayout(game.platform, landscape, game.id) } })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(AppLanguage.text(R.string.opt_frame_skip), Modifier.weight(1f), color = TextPrimary)
+                    Switch(checked = frameSkip, enabled = !menuBusy, onCheckedChange = { value -> runMenuOperation {
+                        app.settingsRepository.setFrameSkip(game.id, value); app.emulatorSession.setFrameSkip(value)
+                    } })
+                }
+                Text(AppLanguage.text(R.string.opt_performance_hint), color = TextSecondary, fontSize = 12.sp)
+                if (app.emulatorSession.supportsRewind(game.platform)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(AppLanguage.text(R.string.opt_rewind), Modifier.weight(1f), color = TextPrimary)
+                        Switch(checked = rewindEnabled, enabled = !menuBusy, onCheckedChange = { value -> runMenuOperation {
+                            app.settingsRepository.setRewindEnabled(game.id, value); app.emulatorSession.configureRewind(value)
+                        } })
+                    }
+                    Text(AppLanguage.text(R.string.opt_rewind_hint), color = TextSecondary, fontSize = 12.sp)
+                    TextButton(enabled = rewindReady && !menuBusy, onClick = { quickAction(2) }) { Text(AppLanguage.text(R.string.opt_rewind)) }
+                }
+                Text(AppLanguage.text(R.string.opt_shortcuts), color = TextSecondary, fontSize = 12.sp)
                 Text(AppLanguage.text(R.string.play_speed), color = TextPrimary)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -525,7 +613,7 @@ fun PlayerScreen(
                 }
             }
             val stateActions: @Composable ColumnScope.() -> Unit = {
-                (1..5).chunked(2).forEach { row ->
+                ((1..5).toList() + availableSaves.filter { it.slotIndex > 5 }.map { it.slotIndex }.distinct()).chunked(2).forEach { row ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         row.forEach { slot ->
                             val saved = availableSaves.firstOrNull { it.coreId == core?.coreId && it.slotIndex == slot }
@@ -539,7 +627,7 @@ fun PlayerScreen(
                             OutlinedButton(
                                 modifier = Modifier.weight(1f).heightIn(min = 88.dp)
                                     .onFocusChanged { slotFocused = it.isFocused },
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(4.dp),
                                 border = BorderStroke(if (selected || slotFocused) 2.dp else 1.dp,
                                     if (slotFocused || selected) AladdinGold else DividerDark),
                                 colors = ButtonDefaults.outlinedButtonColors(
@@ -554,6 +642,10 @@ fun PlayerScreen(
                                         Text(AppLanguage.text(R.string.ui_slot_value, slot), fontWeight = FontWeight.Bold,
                                             modifier = Modifier.weight(1f))
                                         RadioButton(selected = selected, onClick = null, modifier = Modifier.size(20.dp))
+                                    }
+                                    saved?.thumbnailPath?.let { path ->
+                                        AsyncImage(model = File(path), contentDescription = AppLanguage.text(R.string.play_save_preview),
+                                            modifier = Modifier.fillMaxWidth().height(56.dp).background(Color.Black))
                                     }
                                     Text(status, color = if (saved != null && saved in compatibleSaves) AccentGreen else TextSecondary,
                                         fontSize = 12.sp)
@@ -584,6 +676,26 @@ fun PlayerScreen(
                 } else {
                     Text(AppLanguage.text(R.string.play_empty_slot), color = TextSecondary, fontSize = 12.sp)
                 }
+                previousTimestamp?.let { timestamp ->
+                    Text(AppLanguage.text(R.string.save_previous_time,
+                        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))),
+                        color = TextSecondary, fontSize = 12.sp)
+                    FocusableButton(
+                        text = AppLanguage.text(R.string.save_load_previous),
+                        enabled = !menuBusy,
+                        onClick = {
+                            runMenuOperation {
+                                val ok = app.emulatorSession.loadManualState(selectedSaveSlot, previous = true)
+                                if (ok) {
+                                    allowDiscard = false
+                                    showPauseMenu = false
+                                    app.inputManager.setMenuIntercept(false)
+                                    app.emulatorSession.resume()
+                                } else pauseStatusText = AppLanguage.text(R.string.ui_load_failed_empty_slot_or_incompatible_version)
+                            }
+                        }
+                    )
+                }
                 if (totalDiscs > 1) {
                     Text(AppLanguage.text(R.string.ui_change_disc), color = TextSecondary)
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -610,7 +722,7 @@ fun PlayerScreen(
                 FocusableButton(
                     text = AppLanguage.text(R.string.polish_save_short),
                     modifier = Modifier.weight(1f),
-                    enabled = !menuBusy,
+                    enabled = !menuBusy && selectedSaveSlot in 1..5,
                     onClick = {
                         if (selectedSave != null) pendingOverwriteSlot = selectedSaveSlot else saveSlot(selectedSaveSlot)
                     }
@@ -635,8 +747,8 @@ fun PlayerScreen(
                 )
             }
             val detailActions: @Composable ColumnScope.() -> Unit = {
-                TabRow(selectedTabIndex = pauseSection, containerColor = CardDark, contentColor = AladdinGold) {
-                    listOf(R.string.polish_saves, R.string.polish_speed_audio).forEachIndexed { index, label ->
+                TabRow(selectedTabIndex = pauseSection, containerColor = BgDark, contentColor = AladdinGold) {
+                    listOf(R.string.polish_saves, R.string.opt_game_options).forEachIndexed { index, label ->
                         Tab(selected = pauseSection == index, enabled = !menuBusy,
                             onClick = { pauseSection = index }, text = { Text(AppLanguage.text(label)) })
                     }
@@ -651,15 +763,15 @@ fun PlayerScreen(
                 }
             }
             BoxWithConstraints(
-                modifier = Modifier.fillMaxSize().safeDrawingPadding().background(BgDark.copy(alpha = 0.95f)),
+                modifier = Modifier.fillMaxSize().background(BgDark.copy(alpha = 0.98f)).safeDrawingPadding(),
                 contentAlignment = Alignment.Center
             ) {
                 val twoColumns = maxWidth > maxHeight
                 Column(
                     modifier = Modifier
-                        .widthIn(max = if (twoColumns) 880.dp else 480.dp)
+                        .widthIn(max = if (twoColumns) 1000.dp else 480.dp)
                         .fillMaxHeight(0.94f)
-                        .background(CardDark, RoundedCornerShape(16.dp))
+                        .background(CardDark, RoundedCornerShape(4.dp))
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -668,6 +780,7 @@ fun PlayerScreen(
                         color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis
                     )
+                    HorizontalDivider(color = DividerDark)
                     if (menuBusy) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Text(AppLanguage.text(R.string.ux_processing), color = TextSecondary, fontSize = 12.sp)
@@ -704,7 +817,21 @@ fun PlayerScreen(
                 }
             )
         }
-        if (showResumePrompt) {
+        if (editingControls) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { editingControls = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            Box(Modifier.fillMaxSize().background(BgDark)) {
+                VirtualGamepadOverlay(platform = game.platform, adapter = app.inputManager,
+                    scale = touchScale, edgeInset = touchEdgeInset, bottomInset = touchBottomInset,
+                    layout = draftLayout, editing = true, onLayoutChange = { draftLayout = it },
+                    onEditDone = { coroutineScope.launch {
+                        app.settingsRepository.setControlLayout(game.platform, landscape, game.id, draftLayout)
+                        editingControls = false
+                    } })
+            }
+        }
+    }
+    if (showResumePrompt) {
             AlertDialog(
                 onDismissRequest = { if (!menuBusy) onExitGame() },
                 title = { Text(AppLanguage.text(R.string.play_resume_title)) },

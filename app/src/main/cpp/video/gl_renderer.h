@@ -65,6 +65,10 @@ private:
 
     GLuint mProgram = 0;
     GLuint mTextureId = 0;
+    unsigned mTextureWidth = 0;
+    unsigned mTextureHeight = 0;
+    GLenum mTextureFormat = 0;
+    GLenum mTextureType = 0;
     GLuint mPositionHandle = 0;
     GLuint mTexCoordHandle = 0;
     GLuint mSamplerHandle = 0;

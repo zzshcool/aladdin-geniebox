@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 val Context.dataStore by preferencesDataStore(name = "aladdin_settings")
 
@@ -21,6 +23,7 @@ class SettingsRepository(private val context: Context) {
         val KEY_TOUCH_VIBRATION = booleanPreferencesKey("touch_vibration")
         val KEY_AUTO_RESUME = booleanPreferencesKey("auto_resume")
         val KEY_VIRTUAL_GAMEPAD_MODE = intPreferencesKey("virtual_gamepad_mode") // 0: Auto, 1: Always Show, 2: Always Hide
+        private val KEY_VISIBLE_GAMEPAD_DEFAULT_INITIALIZED = booleanPreferencesKey("virtual_gamepad_visible_default_initialized")
         val KEY_DEVICE_UI_MODE = intPreferencesKey("device_ui_mode") // 0: Auto Detect, 1: Mobile Mode, 2: TV Mode
         val KEY_THEME_MODE = intPreferencesKey("theme_mode") // 0: System, 1: Light, 2: Dark
     }
@@ -63,7 +66,8 @@ class SettingsRepository(private val context: Context) {
 
     fun controllerMapping(descriptor: String, playerId: Int): Map<Int, Int> {
         val value = context.getSharedPreferences("controller_mappings", Context.MODE_PRIVATE)
-            .getString(controllerMappingKey(descriptor, playerId), null) ?: return emptyMap()
+            .let { it.getString(controllerMappingKey(descriptor, playerId), null)
+                ?: it.getString("device_$descriptor", null) } ?: return emptyMap()
         val json = org.json.JSONObject(value)
         return json.keys().asSequence().associate { it.toInt() to json.getInt(it) }
     }
@@ -72,14 +76,18 @@ class SettingsRepository(private val context: Context) {
         val json = org.json.JSONObject()
         mapping.forEach { (key, value) -> json.put(key.toString(), value) }
         context.getSharedPreferences("controller_mappings", Context.MODE_PRIVATE).edit()
-            .putString(controllerMappingKey(descriptor, playerId), json.toString()).apply()
+            .putString(controllerMappingKey(descriptor, playerId), json.toString())
+            .putString("device_$descriptor", json.toString()).apply()
     }
 
     fun resetControllerMapping(descriptor: String, playerId: Int) {
         context.getSharedPreferences("controller_mappings", Context.MODE_PRIVATE).edit()
-            .remove(controllerMappingKey(descriptor, playerId)).apply()
+            .remove(controllerMappingKey(descriptor, playerId)).remove("device_$descriptor").apply()
     }
-    val virtualGamepadMode: Flow<Int> = context.dataStore.data.map { it[KEY_VIRTUAL_GAMEPAD_MODE] ?: 0 }
+    val virtualGamepadMode: Flow<Int> = context.dataStore.data.map { values ->
+        val mode = values[KEY_VIRTUAL_GAMEPAD_MODE] ?: 1
+        if (values[KEY_VISIBLE_GAMEPAD_DEFAULT_INITIALIZED] != true && mode != 2) 1 else mode
+    }
     val deviceUiMode: Flow<Int> = context.dataStore.data.map { it[KEY_DEVICE_UI_MODE] ?: 0 }
     val themeMode: Flow<Int> = context.dataStore.data.map { it[KEY_THEME_MODE] ?: 0 }
 
@@ -116,6 +124,15 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[KEY_VIRTUAL_GAMEPAD_MODE] = mode }
     }
 
+    suspend fun initializeVirtualGamepadDefault() {
+        context.dataStore.edit { values ->
+            if (values[KEY_VISIBLE_GAMEPAD_DEFAULT_INITIALIZED] != true) {
+                if (values[KEY_VIRTUAL_GAMEPAD_MODE] != 2) values[KEY_VIRTUAL_GAMEPAD_MODE] = 1
+                values[KEY_VISIBLE_GAMEPAD_DEFAULT_INITIALIZED] = true
+            }
+        }
+    }
+
     suspend fun setDeviceUiMode(mode: Int) {
         context.dataStore.edit { it[KEY_DEVICE_UI_MODE] = mode }
     }
@@ -125,32 +142,47 @@ class SettingsRepository(private val context: Context) {
             values[floatPreferencesKey("${key.name}_${platform.id}")] ?: values[key] ?: fallback
         }
 
-    fun touchOpacity(platform: PlatformType): Flow<Float> = platformFloat(KEY_TOUCH_OPACITY, platform, 0.65f)
-    fun touchScale(platform: PlatformType): Flow<Float> = platformFloat(KEY_TOUCH_SCALE, platform, 1f)
-    fun touchEdgeInset(platform: PlatformType): Flow<Float> =
-        context.dataStore.data.map { it[floatPreferencesKey("touch_edge_${platform.id}")] ?: 8f }
-    fun touchBottomInset(platform: PlatformType): Flow<Float> =
-        context.dataStore.data.map { it[floatPreferencesKey("touch_bottom_${platform.id}")] ?: 12f }
+    private fun touchKey(name: String, platform: PlatformType, landscape: Boolean?) =
+        floatPreferencesKey("${name}_${platform.id}" + when (landscape) {
+            true -> "_landscape"
+            false -> "_portrait"
+            null -> ""
+        })
+
+    private fun touchValue(name: String, platform: PlatformType, landscape: Boolean?, fallback: Float): Flow<Float> =
+        context.dataStore.data.map {
+            it[touchKey(name, platform, landscape)] ?: it[touchKey(name, platform, null)] ?:
+                it[floatPreferencesKey(name)] ?: fallback
+        }
+
+    fun touchOpacity(platform: PlatformType, landscape: Boolean? = null): Flow<Float> =
+        touchValue(KEY_TOUCH_OPACITY.name, platform, landscape, 0.65f)
+    fun touchScale(platform: PlatformType, landscape: Boolean? = null): Flow<Float> =
+        touchValue(KEY_TOUCH_SCALE.name, platform, landscape, 1f)
+    fun touchEdgeInset(platform: PlatformType, landscape: Boolean? = null): Flow<Float> =
+        touchValue("touch_edge", platform, landscape, 8f)
+    fun touchBottomInset(platform: PlatformType, landscape: Boolean? = null): Flow<Float> =
+        touchValue("touch_bottom", platform, landscape, 12f)
     fun touchVibration(platform: PlatformType): Flow<Boolean> =
         context.dataStore.data.map {
             it[booleanPreferencesKey("${KEY_TOUCH_VIBRATION.name}_${platform.id}")] ?: it[KEY_TOUCH_VIBRATION] ?: true
         }
 
-    suspend fun setTouchOpacity(platform: PlatformType, value: Float) {
+    suspend fun setTouchOpacity(platform: PlatformType, value: Float, landscape: Boolean? = null) {
         require(value in 0.2f..1f)
-        context.dataStore.edit { it[floatPreferencesKey("${KEY_TOUCH_OPACITY.name}_${platform.id}")] = value }
+        context.dataStore.edit { it[touchKey(KEY_TOUCH_OPACITY.name, platform, landscape)] = value }
     }
 
-    suspend fun setTouchScale(platform: PlatformType, value: Float) {
+    suspend fun setTouchScale(platform: PlatformType, value: Float, landscape: Boolean? = null) {
         require(value in 0.75f..1.4f)
-        context.dataStore.edit { it[floatPreferencesKey("${KEY_TOUCH_SCALE.name}_${platform.id}")] = value }
+        context.dataStore.edit { it[touchKey(KEY_TOUCH_SCALE.name, platform, landscape)] = value }
     }
 
-    suspend fun setTouchPosition(platform: PlatformType, edge: Float, bottom: Float) {
+    suspend fun setTouchPosition(platform: PlatformType, edge: Float, bottom: Float, landscape: Boolean? = null) {
         require(edge in 0f..64f && bottom in 0f..72f)
         context.dataStore.edit {
-            it[floatPreferencesKey("touch_edge_${platform.id}")] = edge
-            it[floatPreferencesKey("touch_bottom_${platform.id}")] = bottom
+            it[touchKey("touch_edge", platform, landscape)] = edge
+            it[touchKey("touch_bottom", platform, landscape)] = bottom
         }
     }
 
@@ -158,14 +190,112 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[booleanPreferencesKey("${KEY_TOUCH_VIBRATION.name}_${platform.id}")] = enabled }
     }
 
-    suspend fun resetTouchControls(platform: PlatformType) {
+    suspend fun resetTouchControls(platform: PlatformType, landscape: Boolean? = null) {
         context.dataStore.edit {
-            it[floatPreferencesKey("${KEY_TOUCH_OPACITY.name}_${platform.id}")] = 0.65f
-            it[floatPreferencesKey("${KEY_TOUCH_SCALE.name}_${platform.id}")] = 1f
+            it[touchKey(KEY_TOUCH_OPACITY.name, platform, landscape)] = 0.65f
+            it[touchKey(KEY_TOUCH_SCALE.name, platform, landscape)] = 1f
             it[booleanPreferencesKey("${KEY_TOUCH_VIBRATION.name}_${platform.id}")] = true
-            it[floatPreferencesKey("touch_edge_${platform.id}")] = 8f
-            it[floatPreferencesKey("touch_bottom_${platform.id}")] = 12f
+            it[touchKey("touch_edge", platform, landscape)] = 8f
+            it[touchKey("touch_bottom", platform, landscape)] = 12f
         }
+    }
+
+    val introMode: Flow<Int> = context.dataStore.data.map { it[intPreferencesKey("intro_mode")] ?: 0 }
+    suspend fun setIntroMode(mode: Int) {
+        require(mode in 0..2)
+        context.dataStore.edit { it[intPreferencesKey("intro_mode")] = mode }
+    }
+
+    suspend fun shouldPlayIntro(): Boolean {
+        val values = context.dataStore.data.first()
+        val day = java.time.LocalDate.now().toString()
+        val mode = values[intPreferencesKey("intro_mode")] ?: 0
+        val play = mode == 0 || mode == 1 && values[stringPreferencesKey("intro_day")] != day
+        if (play) context.dataStore.edit { it[stringPreferencesKey("intro_day")] = day }
+        return play
+    }
+
+    fun gameAspectRatio(gameId: String): Flow<Int> = context.dataStore.data.map {
+        it[intPreferencesKey("game_aspect_$gameId")] ?: it[KEY_ASPECT_RATIO_MODE] ?: 0
+    }
+    fun gameFilter(gameId: String): Flow<Boolean> = context.dataStore.data.map {
+        it[booleanPreferencesKey("game_filter_$gameId")] ?: it[KEY_BILINEAR_FILTER] ?: false
+    }
+    suspend fun setGameVideo(gameId: String, aspect: Int, filter: Boolean) {
+        require(aspect in 0..2)
+        context.dataStore.edit {
+            it[intPreferencesKey("game_aspect_$gameId")] = aspect
+            it[booleanPreferencesKey("game_filter_$gameId")] = filter
+        }
+    }
+    fun rewindEnabled(gameId: String): Flow<Boolean> = context.dataStore.data.map {
+        it[booleanPreferencesKey("rewind_$gameId")] ?: false
+    }
+    suspend fun setRewindEnabled(gameId: String, enabled: Boolean) {
+        context.dataStore.edit { it[booleanPreferencesKey("rewind_$gameId")] = enabled }
+    }
+    fun frameSkip(gameId: String): Flow<Boolean> = context.dataStore.data.map {
+        it[booleanPreferencesKey("frame_skip_$gameId")] ?: false
+    }
+    suspend fun setFrameSkip(gameId: String, enabled: Boolean) {
+        context.dataStore.edit { it[booleanPreferencesKey("frame_skip_$gameId")] = enabled }
+    }
+
+    private fun layoutKey(platform: PlatformType, landscape: Boolean, gameId: String?) =
+        stringPreferencesKey("control_layout_${gameId ?: platform.id}_${if (landscape) "landscape" else "portrait"}")
+
+    fun controlLayout(platform: PlatformType, landscape: Boolean, gameId: String? = null): Flow<Map<String, Triple<Float, Float, Float>>> =
+        context.dataStore.data.map { values ->
+            val json = org.json.JSONObject(values[layoutKey(platform, landscape, gameId)]
+                ?: values[layoutKey(platform, landscape, null)] ?: "{}")
+            json.keys().asSequence().associateWith { key ->
+                val a = json.getJSONArray(key)
+                Triple(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat())
+            }
+        }
+
+    suspend fun setControlLayout(platform: PlatformType, landscape: Boolean, gameId: String?, layout: Map<String, Triple<Float, Float, Float>>) {
+        val json = org.json.JSONObject()
+        layout.forEach { (key, value) ->
+            json.put(key, org.json.JSONArray(listOf(value.first.coerceIn(0f, 1f),
+                value.second.coerceIn(0f, 1f), value.third.coerceIn(0.65f, 1.6f))))
+        }
+        context.dataStore.edit { it[layoutKey(platform, landscape, gameId)] = json.toString() }
+    }
+    suspend fun resetControlLayout(platform: PlatformType, landscape: Boolean, gameId: String? = null) {
+        context.dataStore.edit { it.remove(layoutKey(platform, landscape, gameId)) }
+    }
+
+    val gamePresentation: Flow<Map<String, Pair<String?, String?>>> = context.dataStore.data.map { values ->
+        val json = org.json.JSONObject(values[stringPreferencesKey("game_presentation")] ?: "{}")
+        json.keys().asSequence().associateWith { key ->
+            val item = json.getJSONObject(key)
+            item.optString("title").takeIf { it.isNotBlank() } to item.optString("cover").takeIf { it.isNotBlank() }
+        }
+    }.distinctUntilChanged()
+    suspend fun setGamePresentation(gameId: String, title: String?, cover: String?) {
+        context.dataStore.edit { values ->
+            val key = stringPreferencesKey("game_presentation")
+            val json = org.json.JSONObject(values[key] ?: "{}")
+            if (title == null && cover == null) json.remove(gameId)
+            else json.put(gameId, org.json.JSONObject().put("title", title ?: "").put("cover", cover ?: ""))
+            values[key] = json.toString()
+        }
+    }
+
+    fun preferredPlayer(descriptor: String): Int? = context.getSharedPreferences("controller_mappings", Context.MODE_PRIVATE)
+        .getInt("preferred_player_$descriptor", 0).takeIf { it in 1..4 }
+    fun setPreferredPlayer(descriptor: String, playerId: Int) {
+        context.getSharedPreferences("controller_mappings", Context.MODE_PRIVATE).edit()
+            .putInt("preferred_player_$descriptor", playerId).apply()
+    }
+
+    fun libraryState(): org.json.JSONObject = org.json.JSONObject(
+        context.getSharedPreferences("library_navigation", Context.MODE_PRIVATE).getString("state", "{}") ?: "{}")
+    fun saveLibraryState(category: String, query: String, sort: Int, index: Int, offset: Int, focused: String?) {
+        val json = org.json.JSONObject().put("category", category).put("query", query).put("sort", sort)
+            .put("index", index).put("offset", offset).put("focused", focused ?: "")
+        context.getSharedPreferences("library_navigation", Context.MODE_PRIVATE).edit().putString("state", json.toString()).apply()
     }
 
     fun isTvDevice(): Boolean {

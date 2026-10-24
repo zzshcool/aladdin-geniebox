@@ -171,6 +171,8 @@ void GLRenderer::initGL() {
     mSamplerHandle = glGetUniformLocation(mProgram, "uSampler");
 
     glGenTextures(1, &mTextureId);
+    mTextureWidth = mTextureHeight = 0;
+    mTextureFormat = mTextureType = 0;
     glBindTexture(GL_TEXTURE_2D, mTextureId);
     GLint filter = mBilinear ? GL_LINEAR : GL_NEAREST;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
@@ -252,10 +254,22 @@ void GLRenderer::updateSoftwareFrame(const void* data, unsigned width, unsigned 
 
     glBindTexture(GL_TEXTURE_2D, mTextureId);
 
+    const auto upload = [&](GLenum format, GLenum type, const void* pixels) {
+        if (mTextureWidth != width || mTextureHeight != height ||
+            mTextureFormat != format || mTextureType != type) {
+            glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, type, nullptr);
+            mTextureWidth = width;
+            mTextureHeight = height;
+            mTextureFormat = format;
+            mTextureType = type;
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, format, type, pixels);
+    };
+
     if (mPixelFormat == RETRO_PIXEL_FORMAT_RGB565) {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
         if (pitch == width * 2) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, data);
+            upload(GL_RGB, GL_UNSIGNED_SHORT_5_6_5, data);
         } else {
             size_t tightBytes = width * height * 2;
             mPixelStaging.resize(tightBytes);
@@ -263,7 +277,7 @@ void GLRenderer::updateSoftwareFrame(const void* data, unsigned width, unsigned 
             for (unsigned y = 0; y < height; ++y) {
                 std::memcpy(&mPixelStaging[y * width * 2], src + (y * pitch), width * 2);
             }
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, mPixelStaging.data());
+            upload(GL_RGB, GL_UNSIGNED_SHORT_5_6_5, mPixelStaging.data());
         }
     } else if (mPixelFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -282,10 +296,21 @@ void GLRenderer::updateSoftwareFrame(const void* data, unsigned width, unsigned 
                 dstRow[x] = (0xFF << 24) | (b << 16) | (g << 8) | r;
             }
         }
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, mPixelStaging.data());
+        upload(GL_RGBA, GL_UNSIGNED_BYTE, mPixelStaging.data());
     } else if (mPixelFormat == RETRO_PIXEL_FORMAT_0RGB1555) {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, data);
+        mPixelStaging.resize(static_cast<size_t>(width) * height * 2);
+        const auto* source = static_cast<const uint8_t*>(data);
+        for (unsigned y = 0; y < height; ++y) {
+            for (unsigned x = 0; x < width; ++x) {
+                uint16_t pixel;
+                std::memcpy(&pixel, source + y * pitch + x * 2, sizeof(pixel));
+                const uint16_t rgba = static_cast<uint16_t>(((pixel & 0x7fff) << 1) | 1);
+                std::memcpy(mPixelStaging.data() + (static_cast<size_t>(y) * width + x) * 2,
+                            &rgba, sizeof(rgba));
+            }
+        }
+        upload(GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, mPixelStaging.data());
     }
 }
 

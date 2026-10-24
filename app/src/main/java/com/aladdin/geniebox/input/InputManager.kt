@@ -66,6 +66,9 @@ class InputManager(
     private var mappingRetroKey: Int? = null
     private var mappingCompleted: (() -> Unit)? = null
     private val controllerMaps = mutableMapOf<Pair<String, Int>, Map<Int, Int>>()
+    var introSkipHandler: (() -> Unit)? = null
+    var gameShortcutHandler: ((Int) -> Unit)? = null
+    private val shortcutKeys = mutableSetOf<Pair<Int, Int>>()
 
     fun beginButtonMapping(playerId: Int, retroKey: Int, onComplete: () -> Unit) {
         releaseAllInputs()
@@ -142,7 +145,9 @@ class InputManager(
                 assigned.deviceName = dev.name ?: ""
                 assigned.isConnected = true
             } else {
-                val emptySlot = slots.firstOrNull { !it.isConnected }
+                val preferred = settings.preferredPlayer(dev.descriptor)?.let { slots[it - 1] }
+                val emptySlot = preferred?.takeIf { !it.isConnected || it.deviceId == -1 }
+                    ?: slots.firstOrNull { !it.isConnected || it.deviceId == -1 }
                 if (emptySlot != null) {
                     emptySlot.deviceId = dev.id
                     emptySlot.descriptor = dev.descriptor
@@ -163,10 +168,15 @@ class InputManager(
         val slot = slots[playerId - 1]
         val dev = androidInputManager.getInputDevice(deviceId)
         if (dev != null) {
+            releaseAllInputs()
+            slots.filter { it !== slot && it.deviceId == deviceId }.forEach {
+                it.deviceId = -1; it.isConnected = false; it.descriptor = ""; it.deviceName = ""
+            }
             slot.deviceId = dev.id
             slot.descriptor = dev.descriptor
             slot.deviceName = dev.name ?: ""
             slot.isConnected = true
+            settings.setPreferredPlayer(dev.descriptor, playerId)
         } else {
             slot.deviceId = -1
             slot.descriptor = ""
@@ -194,9 +204,39 @@ class InputManager(
     }
 
     fun handleKeyEvent(event: KeyEvent): Boolean {
+        introSkipHandler?.let { skip ->
+            if (KeyEvent.isGamepadButton(event.keyCode) || event.keyCode in listOf(
+                    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_BACK)) {
+                if (event.action == KeyEvent.ACTION_UP) skip()
+                return true
+            }
+        }
         val deviceId = event.deviceId
         val slot = slots.firstOrNull { it.deviceId == deviceId } ?: slots[0]
         val playerIdx = slot.playerId - 1
+        val eventKey = deviceId to event.keyCode
+        if (eventKey in shortcutKeys) {
+            if (event.action == KeyEvent.ACTION_UP) shortcutKeys.remove(eventKey)
+            return true
+        }
+        if (inputMode == InputMode.IN_GAME && slot.playerId == 1 && gameShortcutHandler != null) {
+            val selectHeld = slot.digitalButtons and (1 shl RetroPadKey.SELECT) != 0
+            val shortcut = when {
+                event.keyCode == KeyEvent.KEYCODE_F5 -> 0
+                event.keyCode == KeyEvent.KEYCODE_F8 -> 1
+                event.keyCode == KeyEvent.KEYCODE_F6 -> 2
+                selectHeld && keyMap(slot)[event.keyCode] == RetroPadKey.R -> 0
+                selectHeld && keyMap(slot)[event.keyCode] == RetroPadKey.L -> 1
+                selectHeld && keyMap(slot)[event.keyCode] == RetroPadKey.L2 -> 2
+                else -> null
+            }
+            if (shortcut != null && event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                shortcutKeys += eventKey
+                releaseAllInputs()
+                gameShortcutHandler?.invoke(shortcut)
+                return true
+            }
+        }
 
         if (mappingPlayerId != null && KeyEvent.isGamepadButton(event.keyCode)) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&

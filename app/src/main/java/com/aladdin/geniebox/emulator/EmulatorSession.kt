@@ -62,6 +62,48 @@ class EmulatorSession(
     val muteFastForward: StateFlow<Boolean> = _muteFastForward.asStateFlow()
     private val _nesReduceSlowdown = MutableStateFlow(false)
     val nesReduceSlowdown: StateFlow<Boolean> = _nesReduceSlowdown.asStateFlow()
+    data class Performance(val frameMs: Float = 0f, val lateFrames: Int = 0, val presentedFps: Float = 0f,
+        val targetFps: Float = 60f, val outputUnderruns: Int = 0)
+    private val _performance = MutableStateFlow(Performance())
+    val performance = _performance.asStateFlow()
+    private val _rewindReady = MutableStateFlow(false)
+    val rewindReady = _rewindReady.asStateFlow()
+    private val rewindStates = java.util.ArrayDeque<Pair<Long, ByteArray>>()
+    private var rewindBytes = 0L
+    private var emulatedFrames = 0L
+    @Volatile private var rewindEnabled = false
+    @Volatile private var skipLatePresentation = false
+    private val settings = SettingsRepository(context)
+
+    fun supportsRewind(platform: PlatformType): Boolean = platform in setOf(
+        PlatformType.NES, PlatformType.GB, PlatformType.GBA, PlatformType.SFC)
+
+    private fun clearRewind() {
+        rewindStates.clear(); rewindBytes = 0L; _rewindReady.value = false
+    }
+
+    suspend fun configureRewind(enabled: Boolean) = withContext(emulationDispatcher) {
+        rewindEnabled = enabled && currentGame?.let { supportsRewind(it.platform) } == true
+        clearRewind()
+    }
+    fun setFrameSkip(enabled: Boolean) { skipLatePresentation = enabled }
+
+    suspend fun rewind(): Boolean = sessionMutex.withLock {
+        withContext(emulationDispatcher) {
+            if (!isRunning || !rewindEnabled || rewindStates.size < 2) return@withContext false
+            val target = emulatedFrames - (nativeEmulator.nativeGetTargetFps() * 3).toLong()
+            val entry = rewindStates.lastOrNull { it.first <= target } ?: rewindStates.first()
+            val ok = nativeEmulator.nativeUnserializeState(entry.second)
+            if (ok) {
+                emulatedFrames = entry.first
+                while (rewindStates.peekLast()?.first?.let { it >= entry.first } == true) {
+                    rewindBytes -= rewindStates.removeLast().second.size
+                }
+                _rewindReady.value = rewindStates.size >= 2
+            }
+            ok
+        }
+    }
     private val _checkpointError = MutableStateFlow<String?>(null)
     val checkpointError: StateFlow<String?> = _checkpointError.asStateFlow()
     private val _checkpointSaving = MutableStateFlow(false)
@@ -147,6 +189,17 @@ class EmulatorSession(
         coroutineScope.async { startGameInternal(game, autoLoadResumeState) }.await()
 
     private suspend fun startGameInternal(game: Game, autoLoadResumeState: Boolean) = sessionMutex.withLock {
+        try {
+            withContext(Dispatchers.IO) { storageManager.recoverPendingRestore() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _sessionState.value = EmulationSessionState.Failed(
+                reason = FailureReason.UNKNOWN,
+                message = AppLanguage.text(R.string.ux_action_failed, e.localizedMessage ?: "")
+            )
+            return@withLock
+        }
         if (isRunning) {
             if (currentGame?.id == game.id) return@withLock
             if (!stopGameInternal(forceDiscard = false).success) return@withLock
@@ -198,6 +251,7 @@ class EmulatorSession(
         _sessionState.value = EmulationSessionState.Preparing(AppLanguage.text(R.string.ui_preparing_the_game_rom), 0.4f)
         val uri = Uri.parse(game.documentUri)
         val fileName = File(game.relativePath).name
+        var stagingError: Int? = null
 
         val staged = withContext(Dispatchers.IO) {
             val ext = fileName.substringAfterLast('.', "").lowercase()
@@ -205,7 +259,7 @@ class EmulatorSession(
                 // ZIP 格式 ROM：驗證並解壓單一 ROM
                 ext == "zip" || game.entryType == EntryType.ZIP -> {
                     val allowedExts = game.platform.supportedExtensions.filter { it != "zip" }
-                    safBridge.extractSingleRomFromZip(game.id, uri, allowedExts)
+                    safBridge.extractSingleRomFromZip(game.id, uri, allowedExts) { stagingError = it }
                 }
                 // PS1 CUE 格式：從來源樹解析父目錄，一併複製同目錄參照的所有 BIN 軌道 (R2-04, R2-12)
                 ext == "cue" || game.entryType == EntryType.CUE_BIN -> {
@@ -265,7 +319,8 @@ class EmulatorSession(
         if (staged == null || !staged.exists()) {
             _sessionState.value = EmulationSessionState.Failed(
                 reason = FailureReason.SOURCE_OFFLINE,
-                message = AppLanguage.text(R.string.ui_game_source_is_offline_or_unreadable_value, fileName)
+                message = AppLanguage.text(stagingError ?: if (!storageManager.checkStorageAvailable())
+                    R.string.launch_storage_full else R.string.launch_source_unreadable)
             )
             return@withLock
         }
@@ -352,6 +407,16 @@ class EmulatorSession(
                 return@withLock
             }
         }
+
+        withContext(emulationDispatcher) {
+            nativeEmulator.nativeSetAspectRatioMode(settings.gameAspectRatio(game.id).first())
+            nativeEmulator.nativeSetFilterMode(settings.gameFilter(game.id).first())
+            clearRewind()
+            emulatedFrames = 0L
+        }
+        rewindEnabled = supportsRewind(game.platform) && settings.rewindEnabled(game.id).first()
+        skipLatePresentation = settings.frameSkip(game.id).first()
+        _performance.value = Performance()
 
         // 10. 記錄最近遊玩
         gameRepository.recordGamePlay(game.id, desc.coreId)
@@ -523,11 +588,19 @@ class EmulatorSession(
             var currentCalculatedFps = targetFps
             var previousSpeed = _playbackSpeed.value
             var renderCredit = 0.0
+            var frameWorkNs = 0L
+            var lateFrames = 0
+            var presented = 0
+            var skippedLast = false
+            val rewindInterval = (targetFps / 2).toInt().coerceAtLeast(1)
+            lastFpsCalc = android.os.SystemClock.elapsedRealtime()
 
             while (isActive && isRunning) {
                 if (isPaused) {
                     delay(50)
                     nextFrameTime = System.nanoTime()
+                    lastFpsCalc = android.os.SystemClock.elapsedRealtime()
+                    frameCounter = 0; frameWorkNs = 0L; lateFrames = 0; presented = 0
                     continue
                 }
 
@@ -540,13 +613,36 @@ class EmulatorSession(
                 renderCredit += 1.0 / speed
                 val presentFrame = renderCredit >= 1.0 - 0.000001
                 if (presentFrame) renderCredit -= 1.0
-                nativeEmulator.nativeRunFrame(presentFrame)
+                val started = System.nanoTime()
+                val late = started - nextFrameTime > framePeriodNs
+                val skip = skipLatePresentation && late && !skippedLast
+                nativeEmulator.nativeRunFrame(presentFrame && !skip)
+                skippedLast = skip
+                if (presentFrame && !skip) presented++
+                if (late) lateFrames++
+                frameWorkNs += System.nanoTime() - started
+                emulatedFrames++
+                if (rewindEnabled && emulatedFrames % rewindInterval == 0L) {
+                    val bytes = nativeEmulator.nativeSerializeState()
+                    if (bytes == null || bytes.isEmpty() || bytes.size > 8 * 1024 * 1024) {
+                        rewindEnabled = false; clearRewind()
+                    } else {
+                        rewindStates.addLast(emulatedFrames to bytes); rewindBytes += bytes.size
+                        while (rewindStates.size > 20 || rewindBytes > 32L * 1024 * 1024) {
+                            rewindBytes -= rewindStates.removeFirst().second.size
+                        }
+                        _rewindReady.value = rewindStates.size >= 2
+                    }
+                }
                 frameCounter++
 
-                val now = System.currentTimeMillis()
+                val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastFpsCalc >= 1000) {
                     currentCalculatedFps = (frameCounter * 1000.0f) / (now - lastFpsCalc)
+                    _performance.value = Performance(frameWorkNs / frameCounter / 1_000_000f, lateFrames,
+                        presented * 1000f / (now - lastFpsCalc), targetFps * speed, audioTrack?.underrunCount ?: 0)
                     frameCounter = 0
+                    frameWorkNs = 0L; lateFrames = 0; presented = 0
                     lastFpsCalc = now
 
                     val underruns = nativeEmulator.nativeGetAudioUnderruns()
@@ -590,6 +686,7 @@ class EmulatorSession(
         if (isRunning) {
             coroutineScope.launch(emulationDispatcher) {
                 nativeEmulator.nativeReset()
+                clearRewind()
             }
         }
     }
@@ -613,17 +710,18 @@ class EmulatorSession(
         )
     }
 
-    suspend fun loadManualState(slotIndex: Int): Boolean = sessionMutex.withLock {
+    suspend fun loadManualState(slotIndex: Int, previous: Boolean = false): Boolean = sessionMutex.withLock {
         val g = currentGame ?: return@withLock false
         val coreDesc = coreRegistry.cores[g.platform] ?: return@withLock false
         val stateBytes = saveRepository.loadStateData(
             gameId = g.id,
             coreId = coreDesc.coreId,
             expectedCoreVersion = coreDesc.version,
-            slotIndex = slotIndex
+            slotIndex = slotIndex,
+            previous = previous
         ) ?: return@withLock false
         withContext(emulationDispatcher) {
-            nativeEmulator.nativeUnserializeState(stateBytes)
+            nativeEmulator.nativeUnserializeState(stateBytes).also { if (it) clearRewind() }
         }
     }
 
@@ -670,6 +768,7 @@ class EmulatorSession(
         audioTrack = null
 
         withContext(emulationDispatcher) {
+            clearRewind()
             nativeEmulator.nativeUnloadGame()
             nativeEmulator.nativeUnloadCore()
         }

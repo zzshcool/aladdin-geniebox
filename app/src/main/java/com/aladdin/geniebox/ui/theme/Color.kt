@@ -5,6 +5,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
 
+val ConsoleNight = Color(0xFF05080F)
+val ConsolePanel = Color(0xFF0D1420)
+val ConsoleFocus = Color(0xFF9EBBD5)
+val ConsoleText = Color(0xFFE3E8EE)
+
 val BgDark: Color
     @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.background
 val CardDark: Color

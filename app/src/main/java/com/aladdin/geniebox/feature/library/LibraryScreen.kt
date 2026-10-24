@@ -13,6 +13,13 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.text.DateFormat
+import java.util.Date
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -33,6 +40,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -57,6 +66,8 @@ import com.aladdin.geniebox.ui.component.PlatformBadge
 import com.aladdin.geniebox.ui.component.TvCard
 import com.aladdin.geniebox.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 
 enum class LibraryCategory(private val titleRes: Int) {
     ALL(R.string.ui_all_games),
@@ -76,6 +87,7 @@ enum class LibraryCategory(private val titleRes: Int) {
 @Composable
 fun LibraryScreen(
     onGameSelect: (Game) -> Unit,
+    onContinueGame: (Game) -> Unit,
     onNavigateSettings: () -> Unit,
     onNavigateWelcome: () -> Unit
 ) {
@@ -84,28 +96,30 @@ fun LibraryScreen(
     val isTvDevice = remember { app.settingsRepository.isTvDevice() }
     val configuration = LocalConfiguration.current
     val compactLandscape = !isTvDevice && configuration.screenWidthDp > configuration.screenHeightDp
-    val gridState = rememberLazyGridState()
+    val restored = remember { app.settingsRepository.libraryState() }
+    val gridState = rememberLazyGridState(restored.optInt("index"), restored.optInt("offset"))
     val cardFocusRequesters = remember { mutableMapOf<String, FocusRequester>() }
     val platformCategories = remember { LibraryCategory.entries.filter { it != LibraryCategory.FAVORITES && it != LibraryCategory.RECENT } }
 
     BackHandler(enabled = !isTvDevice, onBack = onNavigateWelcome)
 
-    var selectedCategory by rememberSaveable { mutableStateOf(LibraryCategory.ALL) }
-    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedCategory by rememberSaveable { mutableStateOf(LibraryCategory.entries.firstOrNull { it.name == restored.optString("category") } ?: LibraryCategory.ALL) }
+    var searchQuery by rememberSaveable { mutableStateOf(restored.optString("query")) }
     var isSearchActive by remember { mutableStateOf(false) }
-    var focusedGameId by rememberSaveable { mutableStateOf<String?>(null) }
+    var focusedGameId by rememberSaveable { mutableStateOf(restored.optString("focused").takeIf { it.isNotEmpty() }) }
 
-    var sortOrder by rememberSaveable { mutableIntStateOf(0) }
+    var sortOrder by rememberSaveable { mutableIntStateOf(restored.optInt("sort")) }
     var showSortMenu by remember { mutableStateOf(false) }
     var offlineGame by remember { mutableStateOf<Game?>(null) }
 
     // 資料串流
-    val allGames by app.gameRepository.getAllGames().collectAsState(initial = emptyList())
-    val favoriteGames by app.gameRepository.getFavoriteGames().collectAsState(initial = emptyList())
-    val recentGames by app.gameRepository.getRecentGames().collectAsState(initial = emptyList())
+    val allGames by remember { app.gameRepository.getAllGames() }.collectAsState(initial = emptyList())
+    val favoriteGames by remember { app.gameRepository.getFavoriteGames() }.collectAsState(initial = emptyList())
+    val recentGames by remember { app.gameRepository.getRecentGames() }.collectAsState(initial = emptyList())
 
     // 依選中分類與搜尋字串過濾
-    val displayedGames = remember(allGames, favoriteGames, recentGames, selectedCategory, searchQuery, sortOrder) {
+    val displayedGames by produceState(emptyList<Game>(), allGames, favoriteGames, recentGames, selectedCategory, searchQuery, sortOrder) {
+        value = withContext(Dispatchers.Default) {
         val baseList = when (selectedCategory) {
             LibraryCategory.ALL -> allGames
             LibraryCategory.NES -> allGames.filter { it.platform == PlatformType.NES }
@@ -136,10 +150,33 @@ fun LibraryScreen(
             else -> filtered
         }
     }
+    }
 
-
+    val navigation by rememberUpdatedState {
+        app.settingsRepository.saveLibraryState(selectedCategory.name, searchQuery, sortOrder,
+            gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset, focusedGameId)
+    }
+    DisposableEffect(Unit) { onDispose { navigation() } }
+    LaunchedEffect(Unit) {
+        snapshotFlow { listOf(selectedCategory.name, searchQuery, sortOrder,
+            gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset, focusedGameId) }
+            .collectLatest { delay(350); navigation() }
+    }
+    LaunchedEffect(displayedGames) {
+        val ids = displayedGames.map { it.id }.toSet()
+        cardFocusRequesters.keys.retainAll(ids)
+    }
+    val continueGames by remember { app.gameRepository.getContinueGames() }.collectAsState(initial = emptyList())
+    val continueGame = continueGames.firstOrNull()
+    val continueSaves by remember(continueGame?.id) {
+        continueGame?.let { app.saveRepository.getAvailableSavesForGame(it.id) }
+            ?: kotlinx.coroutines.flow.flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+    val continueCore = continueGame?.let { app.coreRegistry.cores[it.platform] }
+    val continueSave = continueSaves.firstOrNull { it.slotIndex == 0 && it.coreId == continueCore?.coreId &&
+        it.coreVersion == continueCore?.version && it.formatVersion == 1 }
     val restoreGameId = focusedGameId?.takeIf { id -> displayedGames.any { it.id == id } } ?: displayedGames.firstOrNull()?.id
-    LaunchedEffect(isTvDevice, displayedGames.isNotEmpty()) {
+    LaunchedEffect(isTvDevice, displayedGames) {
         if (isTvDevice && restoreGameId != null) {
             val index = displayedGames.indexOfFirst { it.id == restoreGameId }
             if (index >= 0) {
@@ -152,6 +189,35 @@ fun LibraryScreen(
         }
     }
 
+    var editGameId by rememberSaveable { mutableStateOf<String?>(null) }
+    var editTitle by rememberSaveable { mutableStateOf("") }
+    var editCover by rememberSaveable { mutableStateOf<String?>(null) }
+    var editError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) try {
+            context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            editCover = uri.toString()
+        } catch (e: Exception) { editError = AppLanguage.text(R.string.ux_action_failed, e.localizedMessage ?: "") }
+    }
+    editGameId?.let { id ->
+        AlertDialog(onDismissRequest = { editGameId = null },
+            title = { Text(AppLanguage.text(R.string.opt_edit_game)) },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(value = editTitle, onValueChange = { editTitle = it }, singleLine = true,
+                    label = { Text(AppLanguage.text(R.string.opt_game_name)) })
+                editCover?.let { AsyncImage(model = it, contentDescription = null, modifier = Modifier.height(100.dp)) }
+                TextButton(onClick = { coverPicker.launch(arrayOf("image/*")) }) { Text(AppLanguage.text(R.string.opt_choose_cover)) }
+                TextButton(onClick = { coroutineScope.launch {
+                    app.settingsRepository.setGamePresentation(id, null, null); editGameId = null
+                } }) { Text(AppLanguage.text(R.string.opt_reset_game)) }
+                editError?.let { Text(it, color = AccentRed) }
+            } },
+            confirmButton = { TextButton(enabled = editTitle.isNotBlank(), onClick = { coroutineScope.launch {
+                app.settingsRepository.setGamePresentation(id, editTitle.trim(), editCover); editGameId = null
+            } }) { Text(AppLanguage.text(R.string.polish_save_short)) } },
+            dismissButton = { TextButton(onClick = { editGameId = null }) { Text(AppLanguage.text(R.string.ux_cancel)) } })
+    }
     val currentDisplayedGames by rememberUpdatedState(displayedGames)
     val currentFocusedGameId by rememberUpdatedState(focusedGameId)
     val searchFocusRequester = remember { FocusRequester() }
@@ -239,7 +305,7 @@ fun LibraryScreen(
                             placeholder = { Text(AppLanguage.text(R.string.ui_search_games), fontSize = 14.sp) },
                             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                             singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(4.dp),
                             modifier = Modifier.weight(1f).height(56.dp).focusRequester(searchFocusRequester)
                         )
                         IconButton(onClick = { searchQuery = ""; isSearchActive = false }) {
@@ -272,13 +338,17 @@ fun LibraryScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Image(painterResource(R.drawable.ic_launcher), contentDescription = null, modifier = Modifier.size(48.dp))
                     Column {
+                        Text("ALADDIN GENIEBOX", color = TextSecondary, fontSize = 10.sp,
+                            letterSpacing = 2.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(4.dp))
                         Text(
                             text = when (selectedCategory) {
                                 LibraryCategory.FAVORITES -> AppLanguage.text(R.string.ui_favorites)
                                 LibraryCategory.RECENT -> AppLanguage.text(R.string.ui_recently_played)
                                 else -> AppLanguage.text(R.string.ui_library)
                             },
-                            fontSize = if (isTvDevice) 32.sp else 26.sp,
+                            fontSize = if (isTvDevice) 30.sp else 22.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary,
                             maxLines = 1, overflow = TextOverflow.Ellipsis
@@ -307,7 +377,7 @@ fun LibraryScreen(
                         }
                     },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = AladdinGold,
@@ -384,6 +454,12 @@ fun LibraryScreen(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+        if (continueGame != null && continueSave != null && searchQuery.isBlank() && selectedCategory == LibraryCategory.ALL) {
+            FocusableButton(text = AppLanguage.text(R.string.opt_continue_game, continueGame.title) + " · " +
+                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(continueSave.timestamp)),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                isPrimary = true, onClick = { onContinueGame(continueGame) })
+        }
         Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
             if (compactLandscape) {
                 Column(
@@ -466,10 +542,10 @@ fun LibraryScreen(
                 } else {
                     // 海報牆網格
                     BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val posterHeight = if (compactLandscape) maxHeight.coerceIn(128.dp, 220.dp) else 260.dp
+                    val posterHeight = if (compactLandscape) maxHeight.coerceIn(128.dp, 220.dp) else 224.dp
                     LazyVerticalGrid(
                         state = gridState,
-                        columns = GridCells.Adaptive(minSize = if (isTvDevice) 190.dp else 148.dp),
+                        columns = GridCells.Adaptive(minSize = if (isTvDevice) 190.dp else 140.dp),
                         contentPadding = PaddingValues(vertical = if (compactLandscape) 4.dp else 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -483,6 +559,9 @@ fun LibraryScreen(
                                 onPlay = {
                                     focusedGameId = game.id
                                     if (game.isAvailable) onGameSelect(game) else offlineGame = game
+                                },
+                                onEdit = {
+                                    editGameId = game.id; editTitle = game.title; editCover = game.coverUri; editError = null
                                 },
                                 onToggleFavorite = {
                                     coroutineScope.launch {
@@ -523,6 +602,7 @@ fun GamePosterCard(
     game: Game,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
+    onEdit: () -> Unit = {},
     onFocused: () -> Unit = {},
     cardHeight: Dp = 260.dp,
     focusRequester: FocusRequester? = null
@@ -544,7 +624,7 @@ fun GamePosterCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(2.dp))
                 .background(CardDarkFocused)
         ) {
             if (game.coverUri != null) {
@@ -561,18 +641,17 @@ fun GamePosterCard(
                 // 無封面或封面讀取失敗時，仍顯示可辨識的遊戲名稱。
                 Column(
                     modifier = Modifier.fillMaxSize()
-                        .background(Brush.verticalGradient(listOf(CardDarkFocused, AladdinGold.copy(alpha = 0.14f))))
+                        .background(CardDarkFocused)
                         .padding(horizontal = 14.dp, vertical = if (cardHeight < 200.dp) 12.dp else 34.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
-                    if (cardHeight >= 200.dp) Text(
+                    Text(
                         text = game.platform.id.uppercase(),
-                        fontSize = 11.sp, letterSpacing = 2.sp,
+                        fontSize = if (cardHeight < 200.dp) 20.sp else 28.sp, letterSpacing = 3.sp,
                         fontWeight = FontWeight.SemiBold, color = AladdinGold
                     )
-                    if (cardHeight >= 200.dp) Spacer(Modifier.height(8.dp))
-                    Text(game.title, fontSize = if (cardHeight < 200.dp) 14.sp else 18.sp, fontWeight = FontWeight.SemiBold,
-                        color = TextPrimary, maxLines = if (cardHeight < 200.dp) 2 else 3, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(12.dp))
+                    Box(Modifier.width(24.dp).height(1.dp).background(AladdinGold.copy(alpha = 0.5f)))
                 }
             }
 
@@ -590,6 +669,11 @@ fun GamePosterCard(
                 }
             }
 
+            IconButton(onClick = onEdit, modifier = Modifier.align(Alignment.BottomStart).size(48.dp)
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))) {
+                Text("⋯", color = Color.White, fontSize = 24.sp,
+                    modifier = Modifier.semantics { contentDescription = AppLanguage.text(R.string.opt_edit_game) })
+            }
             // 收藏圖標
             IconButton(
                 onClick = onToggleFavorite,

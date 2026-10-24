@@ -14,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.channels.Channel
+import java.util.concurrent.atomic.AtomicBoolean
 
 class StorageCoordinator(
     private val context: Context,
@@ -22,9 +25,26 @@ class StorageCoordinator(
 ) {
     companion object {
         private const val TAG = "StorageCoordinator"
+        private const val AUTO_RESCAN_INTERVAL_MS = 5 * 60 * 1000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val checks = Channel<Unit>(Channel.CONFLATED)
+    private val scanRequested = AtomicBoolean(false)
+
+    init {
+        scope.launch {
+            for (request in checks) {
+                try {
+                    checkSources(scanRequested.getAndSet(false))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Source check failed", e)
+                }
+            }
+        }
+    }
 
     private val mediaReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -63,26 +83,30 @@ class StorageCoordinator(
      * 前景核對所有來源的可讀狀態，更新在線/離線旗標
      */
     fun checkSourcesAvailability(autoScanNewSources: Boolean = false) {
-        scope.launch {
-            val sources = romSourceRepository.getAllSources().first()
-            for (src in sources) {
-                val uri = Uri.parse(src.treeUri)
-                val doc = try {
-                    DocumentFile.fromTreeUri(context, uri)
-                } catch (e: Exception) {
-                    null
-                }
-                val canRead = (doc != null && doc.exists() && doc.canRead())
-                if (src.isConnected != canRead) {
-                    Log.i(TAG, "Updating source ${src.displayName} connection: $canRead")
-                    romSourceRepository.setSourceConnected(src.id, canRead)
-                }
+        if (autoScanNewSources) scanRequested.set(true)
+        checks.trySend(Unit)
+    }
 
-                // 重新插入且可讀時，若要求自動掃描則進行增量掃描
-                if (canRead && autoScanNewSources) {
-                    Log.i(TAG, "Triggering automatic incremental scan for reconnected source: ${src.displayName}")
-                    romScanner.scanSource(src.id, uri)
-                }
+    private suspend fun checkSources(autoScanNewSources: Boolean) {
+        val sources = romSourceRepository.getAllSources().first()
+        for (src in sources) {
+            val uri = Uri.parse(src.treeUri)
+            val doc = try {
+                DocumentFile.fromTreeUri(context, uri)
+            } catch (e: Exception) {
+                null
+            }
+            val canRead = (doc != null && doc.exists() && doc.canRead())
+            if (src.isConnected != canRead) {
+                Log.i(TAG, "Updating source ${src.displayName} connection: $canRead")
+                romSourceRepository.setSourceConnected(src.id, canRead)
+            }
+
+            // 重新插入且可讀時，若要求自動掃描則進行增量掃描
+            if (canRead && autoScanNewSources && (!src.isConnected || src.lastScannedTime == 0L ||
+                    System.currentTimeMillis() - src.lastScannedTime >= AUTO_RESCAN_INTERVAL_MS)) {
+                Log.i(TAG, "Triggering automatic incremental scan for reconnected source: ${src.displayName}")
+                romScanner.scanSource(src.id, uri)
             }
         }
     }

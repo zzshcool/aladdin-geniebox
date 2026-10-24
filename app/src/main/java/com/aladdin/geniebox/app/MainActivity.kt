@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -26,8 +29,10 @@ import com.aladdin.geniebox.feature.settings.SettingsScreen
 import com.aladdin.geniebox.feature.setup.SetupScreen
 import com.aladdin.geniebox.input.InputMode
 import com.aladdin.geniebox.ui.theme.AladdinGenieBoxTheme
+import com.aladdin.geniebox.ui.component.BrandIntro
 
 sealed class AppDestination {
+    data object Intro : AppDestination()
     data object Setup : AppDestination()
     data object Library : AppDestination()
     data class Player(val game: Game) : AppDestination()
@@ -61,6 +66,17 @@ class MainActivity : ComponentActivity() {
                 var currentDestination by rememberSaveable { mutableStateOf<String>("DEFAULT") }
                 var activeGameId by rememberSaveable { mutableStateOf(app.emulatorSession.activeGame?.id) }
                 var activeGame by remember { mutableStateOf(app.emulatorSession.activeGame) }
+                var introCompleted by rememberSaveable { mutableStateOf(app.emulatorSession.activeGame != null) }
+                var introReady by remember { mutableStateOf(introCompleted) }
+                var resumeDirectly by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    if (!introCompleted && !app.settingsRepository.shouldPlayIntro()) {
+                        introCompleted = true
+                        setupCompletedOrSkipped = true
+                        if (currentDestination == "DEFAULT") currentDestination = "LIBRARY"
+                    }
+                    introReady = true
+                }
                 LaunchedEffect(activeGameId) {
                     val id = activeGameId
                     if (id == null) {
@@ -78,12 +94,22 @@ class MainActivity : ComponentActivity() {
                 // 首次若無來源且未跳過，顯示 Setup；否則顯示 Library
                 val isSetupNeeded = sources.isEmpty() && !setupCompletedOrSkipped
                 val targetDestination = when {
+                    !introCompleted -> AppDestination.Intro
                     currentDestination == "SETUP" -> AppDestination.Setup
                     isSetupNeeded && currentDestination == "DEFAULT" -> AppDestination.Setup
                     currentDestination == "SETTINGS" -> AppDestination.Settings
                     currentDestination == "PLAYER" && activeGame != null -> AppDestination.Player(activeGame!!)
                     currentDestination == "PLAYER" && activeGameId != null -> AppDestination.Restoring
                     else -> AppDestination.Library
+                }
+                val entryAlpha = remember { Animatable(1f) }
+                LaunchedEffect(targetDestination) {
+                    if (targetDestination is AppDestination.Player || targetDestination is AppDestination.Intro) {
+                        entryAlpha.snapTo(1f)
+                    } else {
+                        entryAlpha.snapTo(0f)
+                        entryAlpha.animateTo(1f, tween(180))
+                    }
                 }
 
                 // 同步輸入模式 (Finding 11)
@@ -97,7 +123,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                Box(Modifier.fillMaxSize().graphicsLayer {
+                    alpha = if (targetDestination is AppDestination.Player) 1f else entryAlpha.value
+                }) {
                 when (targetDestination) {
+                    is AppDestination.Intro -> if (introReady) BrandIntro(onFinished = {
+                        introCompleted = true
+                        if (currentDestination == "DEFAULT" && activeGameId == null) {
+                            setupCompletedOrSkipped = true
+                            currentDestination = "LIBRARY"
+                        }
+                    })
                     is AppDestination.Setup -> {
                         SetupScreen(
                             onSetupComplete = {
@@ -110,6 +146,13 @@ class MainActivity : ComponentActivity() {
                         libraryStateHolder.SaveableStateProvider("library") {
                         LibraryScreen(
                             onGameSelect = { game ->
+                                resumeDirectly = false
+                                activeGame = game
+                                activeGameId = game.id
+                                currentDestination = "PLAYER"
+                            },
+                            onContinueGame = { game ->
+                                resumeDirectly = true
                                 activeGame = game
                                 activeGameId = game.id
                                 currentDestination = "PLAYER"
@@ -126,6 +169,7 @@ class MainActivity : ComponentActivity() {
                     is AppDestination.Player -> {
                         PlayerScreen(
                             game = targetDestination.game,
+                            resumeDirectly = resumeDirectly,
                             onExitGame = {
                                 activeGame = null
                                 activeGameId = null
@@ -143,6 +187,7 @@ class MainActivity : ComponentActivity() {
                     is AppDestination.Restoring -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
+                }
                 }
             }
         }

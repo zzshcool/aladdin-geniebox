@@ -51,8 +51,33 @@ interface GameDao {
     @Query(INDEXED_GAMES_QUERY)
     fun observeIndexedGames(): Flow<List<IndexedGame>>
 
+    @Query("""
+        SELECT g.*, (f.gameId IS NOT NULL) AS isFavorite FROM games g
+        LEFT JOIN favorites f ON g.id = f.gameId
+        WHERE EXISTS (SELECT 1 FROM save_metadata s WHERE s.gameId = g.id AND s.slotIndex = 0)
+    """)
+    fun observeResumeGames(): Flow<List<GameWithFavorite>>
+
     @Query(INDEXED_GAMES_QUERY)
     suspend fun getIndexedGames(): List<IndexedGame>
+
+    @Query("SELECT * FROM save_metadata WHERE gameId IN (:gameIds) ORDER BY timestamp DESC")
+    fun observeAliasSaves(gameIds: List<String>): Flow<List<com.aladdin.geniebox.data.db.entity.SaveMetadataEntity>>
+
+    @Query("DELETE FROM save_metadata WHERE id IN (:ids)")
+    suspend fun removeRestoredSaves(ids: List<String>)
+
+    @Query("SELECT * FROM games WHERE sourceId = :sourceId")
+    suspend fun getSourceGames(sourceId: String): List<GameEntity>
+
+    @Transaction
+    suspend fun completeSourceScan(sourceId: String, games: List<GameEntity>) {
+        val keys = games.map { romDocumentKey(it.documentUri) }.toSet()
+        val missing = getSourceGames(sourceId)
+            .filter { it.sourceId == sourceId && romDocumentKey(it.documentUri) !in keys }
+        missing.chunked(100).forEach { batch -> insertOrUpdateGames(batch.map { it.copy(isAvailable = false) }) }
+        upsertScannedGames(games)
+    }
 
     @Transaction
     suspend fun upsertScannedGames(games: List<GameEntity>) {
@@ -70,7 +95,7 @@ interface GameDao {
                 relativePath = if (owner.isAvailable) owner.relativePath else game.relativePath,
                 documentUri = if (owner.isAvailable) owner.documentUri else game.documentUri
             )
-            updates[updated.id] = updated
+            if (updated != owner) updates[updated.id] = updated
             existing[key] = IndexedGame(
                 GameWithFavorite(updated, previous?.entry?.isFavorite ?: false),
                 previous?.lastPlayedTime, previous?.lastSavedTime

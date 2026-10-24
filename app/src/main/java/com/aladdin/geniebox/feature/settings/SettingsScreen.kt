@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,7 +33,9 @@ import com.aladdin.geniebox.domain.model.PlatformType
 import com.aladdin.geniebox.input.RetroPadKey
 import com.aladdin.geniebox.ui.component.FocusableButton
 import com.aladdin.geniebox.ui.theme.*
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
@@ -50,12 +53,15 @@ fun SettingsScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var selectedSection by rememberSaveable { mutableIntStateOf(0) }
+    val sectionScroll = rememberLazyListState()
+    LaunchedEffect(selectedSection) { sectionScroll.scrollToItem(0) }
     var touchPlatformId by rememberSaveable { mutableStateOf(PlatformType.SFC.id) }
+    var touchLandscape by rememberSaveable { mutableStateOf(true) }
     val touchPlatform = PlatformType.fromId(touchPlatformId) ?: PlatformType.SFC
-    val touchOpacity by remember(touchPlatform) { app.settingsRepository.touchOpacity(touchPlatform) }.collectAsState(initial = 0.65f)
-    val touchScale by remember(touchPlatform) { app.settingsRepository.touchScale(touchPlatform) }.collectAsState(initial = 1f)
-    val touchEdge by remember(touchPlatform) { app.settingsRepository.touchEdgeInset(touchPlatform) }.collectAsState(initial = 8f)
-    val touchBottom by remember(touchPlatform) { app.settingsRepository.touchBottomInset(touchPlatform) }.collectAsState(initial = 12f)
+    val touchOpacity by remember(touchPlatform, touchLandscape) { app.settingsRepository.touchOpacity(touchPlatform, touchLandscape) }.collectAsState(initial = 0.65f)
+    val touchScale by remember(touchPlatform, touchLandscape) { app.settingsRepository.touchScale(touchPlatform, touchLandscape) }.collectAsState(initial = 1f)
+    val touchEdge by remember(touchPlatform, touchLandscape) { app.settingsRepository.touchEdgeInset(touchPlatform, touchLandscape) }.collectAsState(initial = 8f)
+    val touchBottom by remember(touchPlatform, touchLandscape) { app.settingsRepository.touchBottomInset(touchPlatform, touchLandscape) }.collectAsState(initial = 12f)
     val touchVibration by remember(touchPlatform) { app.settingsRepository.touchVibration(touchPlatform) }.collectAsState(initial = true)
     val sections = listOf(R.string.ux_section_folders, R.string.ux_section_controls, R.string.ux_section_video, R.string.settings_language_appearance, R.string.ux_section_saves, R.string.ux_section_about)
 
@@ -66,6 +72,11 @@ fun SettingsScreen(
         ps1BiosReady = withContext(Dispatchers.IO) { app.coreRegistry.checkPs1BiosAvailable() }
     }
     var isScanning by remember { mutableStateOf(false) }
+    val scanProgress by app.romScanner.progress.collectAsState()
+    val introMode by app.settingsRepository.introMode.collectAsState(initial = 0)
+    var controlEditor by remember { mutableStateOf(false) }
+    var controlDraft by remember { mutableStateOf<Map<String, Triple<Float, Float, Float>>>(emptyMap()) }
+
     var mappingPlayer by remember { mutableStateOf<Int?>(null) }
     var mappingTarget by remember { mutableStateOf<String?>(null) }
     var mappingRevision by remember { mutableIntStateOf(0) }
@@ -189,6 +200,9 @@ fun SettingsScreen(
                     }
                     actionMessage = scanError?.let { AppLanguage.text(R.string.ui_scan_failed_value, it) }
                         ?: AppLanguage.text(R.string.ui_scan_complete_value_games_found, count)
+                } catch (e: CancellationException) {
+                    if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw e
+                    actionMessage = ""
                 } catch (e: Exception) {
                     actionMessage = AppLanguage.text(R.string.ui_scan_failed_value, e.message)
                 } finally {
@@ -213,6 +227,25 @@ fun SettingsScreen(
         onNavigateBack()
     }
 
+    if (controlEditor) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { controlEditor = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            BoxWithConstraints(Modifier.fillMaxSize().background(BgDark), contentAlignment = Alignment.Center) {
+                val previewWidth = minOf(maxWidth, if (touchLandscape) maxHeight * 2 else maxHeight / 2)
+                val previewHeight = if (touchLandscape) previewWidth / 2 else previewWidth * 2
+                Box(Modifier.size(previewWidth, previewHeight)) {
+                    com.aladdin.geniebox.ui.component.VirtualGamepadOverlay(touchPlatform, app.inputManager,
+                        scale = touchScale, edgeInset = touchEdge, bottomInset = touchBottom,
+                        layout = controlDraft, editing = true, onLayoutChange = { controlDraft = it }, onEditDone = {
+                            coroutineScope.launch {
+                                app.settingsRepository.setControlLayout(touchPlatform, touchLandscape, null, controlDraft)
+                                controlEditor = false
+                            }
+                        })
+                }
+            }
+        }
+    }
     if (mappingPlayer != null) {
         val player = mappingPlayer!!
         fun closeMapping() {
@@ -268,16 +301,26 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(BgDark)
-                    .padding(24.dp),
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("GENIEBOX / SYSTEM", color = TextSecondary, fontSize = 10.sp,
+                    letterSpacing = 2.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    text = AppLanguage.text(R.string.ui_settings_67),
+                    text = AppLanguage.text(R.string.ui_settings),
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
-                    color = AladdinGold
+                    color = TextPrimary
                 )
+                }
+                if (scanProgress?.isFinished == false) {
+                    TextButton(onClick = { app.romScanner.cancelScan() }) {
+                        Text(AppLanguage.text(R.string.opt_cancel_scan))
+                    }
+                }
                 FocusableButton(
                     text = AppLanguage.text(R.string.ui_back_to_library),
                     onClick = onNavigateBack
@@ -300,12 +343,18 @@ fun SettingsScreen(
         }
     ) { innerPadding ->
         LazyColumn(
+            state = sectionScroll,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            item {
+                Text("${(selectedSection + 1).toString().padStart(2, '0')}  /  ${AppLanguage.text(sections[selectedSection])}",
+                    color = TextSecondary, fontSize = 12.sp, letterSpacing = 1.sp)
+            }
             if (actionMessage.isNotEmpty()) {
                 item {
                     Box(
@@ -319,6 +368,20 @@ fun SettingsScreen(
                 }
             }
 
+            scanProgress?.let { progress ->
+                item {
+                    Column(Modifier.fillMaxWidth().background(CardDark).padding(12.dp)) {
+                        Text(progress.error ?: AppLanguage.text(
+                            if (progress.isFinished) R.string.ui_scan_complete_value_games_found else R.string.ui_scanning_value_games,
+                            progress.scannedCount), color = TextSecondary)
+                        if (!progress.isFinished) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            Text(progress.currentFile, color = TextTertiary, maxLines = 1)
+                            TextButton(onClick = { app.romScanner.cancelScan() }) { Text(AppLanguage.text(R.string.opt_cancel_scan)) }
+                        }
+                    }
+                }
+            }
             // 1. 手把與多玩家 (P1–P4) 管理
             if (selectedSection == 3) item {
                 Card(
@@ -331,6 +394,11 @@ fun SettingsScreen(
                     ) {
                         Text(AppLanguage.text(R.string.settings_language_appearance),
                             fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text(AppLanguage.text(R.string.opt_intro_frequency), color = TextSecondary)
+                        listOf(R.string.opt_intro_always, R.string.opt_intro_daily, R.string.opt_intro_off).forEachIndexed { mode, label ->
+                            FocusableButton(text = AppLanguage.text(label), isPrimary = introMode == mode,
+                                onClick = { coroutineScope.launch { app.settingsRepository.setIntroMode(mode) } })
+                        }
                         Text(AppLanguage.text(R.string.settings_language), color = TextSecondary)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             FocusableButton(
@@ -435,6 +503,7 @@ fun SettingsScreen(
 
                         FocusableButton(
                             text = AppLanguage.text(R.string.ui_add_game_folder_phone_usb_drive),
+                            enabled = !isScanning && scanProgress?.isFinished != false,
                             onClick = {
                                 addSourceLauncher.launch(null)
                             }
@@ -444,13 +513,12 @@ fun SettingsScreen(
                             Text(AppLanguage.text(R.string.ui_no_game_folders_yet_use_the_button_above), color = TextTertiary, fontSize = 13.sp)
                         } else {
                             sources.forEach { src ->
-                                Row(
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(CardDarkFocused, RoundedCornerShape(8.dp))
                                         .padding(12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     Column {
                                         Text(src.displayName, fontWeight = FontWeight.SemiBold, color = TextPrimary)
@@ -459,9 +527,10 @@ fun SettingsScreen(
 
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         FocusableButton(
-                                            text = if (isScanning) AppLanguage.text(R.string.ui_scanning) else AppLanguage.text(R.string.ui_rescan),
+                                            text = if (isScanning || scanProgress?.isFinished == false) AppLanguage.text(R.string.ui_scanning) else AppLanguage.text(R.string.ui_rescan),
+                                            enabled = !isScanning && scanProgress?.isFinished != false,
                                             onClick = {
-                                                if (!isScanning) {
+                                                if (!isScanning && scanProgress?.isFinished != false) {
                                                     isScanning = true
                                                     coroutineScope.launch {
                                                         actionMessage = AppLanguage.text(R.string.ui_scanning_value, src.displayName)
@@ -475,6 +544,9 @@ fun SettingsScreen(
                                                             }
                                                             actionMessage = scanError?.let { AppLanguage.text(R.string.ui_scan_failed_value, it) }
                                                                 ?: AppLanguage.text(R.string.ui_scan_complete_value_games_found, count)
+                                                        } catch (e: CancellationException) {
+                                                            if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw e
+                                                            actionMessage = ""
                                                         } catch (e: Exception) {
                                                             actionMessage = AppLanguage.text(R.string.ui_scan_failed_value, e.message)
                                                         } finally {
@@ -487,6 +559,7 @@ fun SettingsScreen(
 
                                         FocusableButton(
                                             text = AppLanguage.text(R.string.ui_remove_folder),
+                                            enabled = !isScanning && scanProgress?.isFinished != false,
                                             onClick = {
                                                 coroutineScope.launch {
                                                     app.romSourceRepository.removeSource(src.id)
@@ -631,17 +704,23 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(true to R.string.control_landscape, false to R.string.control_portrait).forEach { (landscape, label) ->
+                                FilterChip(selected = touchLandscape == landscape,
+                                    onClick = { touchLandscape = landscape }, label = { Text(AppLanguage.text(label)) })
+                            }
+                        }
                         TouchControlSlider(AppLanguage.text(R.string.ux_control_opacity), touchOpacity, 0.2f..1f, multiplier = 100f, unit = "%") {
-                            coroutineScope.launch { app.settingsRepository.setTouchOpacity(touchPlatform, it) }
+                            coroutineScope.launch { app.settingsRepository.setTouchOpacity(touchPlatform, it, touchLandscape) }
                         }
                         TouchControlSlider(AppLanguage.text(R.string.ux_control_scale), touchScale, 0.75f..1.4f, multiplier = 100f, unit = "%") {
-                            coroutineScope.launch { app.settingsRepository.setTouchScale(touchPlatform, it) }
+                            coroutineScope.launch { app.settingsRepository.setTouchScale(touchPlatform, it, touchLandscape) }
                         }
                         TouchControlSlider(AppLanguage.text(R.string.ux_control_edge), touchEdge, 0f..64f, unit = "dp") {
-                            coroutineScope.launch { app.settingsRepository.setTouchPosition(touchPlatform, it, touchBottom) }
+                            coroutineScope.launch { app.settingsRepository.setTouchPosition(touchPlatform, it, touchBottom, touchLandscape) }
                         }
                         TouchControlSlider(AppLanguage.text(R.string.ux_control_bottom), touchBottom, 0f..72f, unit = "dp") {
-                            coroutineScope.launch { app.settingsRepository.setTouchPosition(touchPlatform, touchEdge, it) }
+                            coroutineScope.launch { app.settingsRepository.setTouchPosition(touchPlatform, touchEdge, it, touchLandscape) }
                         }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween) {
@@ -650,10 +729,16 @@ fun SettingsScreen(
                                 coroutineScope.launch { app.settingsRepository.setTouchVibration(touchPlatform, it) }
                             })
                         }
+                        FocusableButton(text = AppLanguage.text(R.string.opt_edit_controls), onClick = {
+                            coroutineScope.launch {
+                                controlDraft = app.settingsRepository.controlLayout(touchPlatform, touchLandscape).first()
+                                app.inputManager.releaseAllInputs(); controlEditor = true
+                            }
+                        })
                         Text(AppLanguage.text(R.string.ux_control_safe_area), fontSize = 12.sp, color = TextSecondary)
                         FocusableButton(
                             text = AppLanguage.text(R.string.ux_reset_controls),
-                            onClick = { coroutineScope.launch { app.settingsRepository.resetTouchControls(touchPlatform) } }
+                            onClick = { coroutineScope.launch { app.settingsRepository.resetTouchControls(touchPlatform, touchLandscape); app.settingsRepository.resetControlLayout(touchPlatform, touchLandscape) } }
                         )
                     }
                 }

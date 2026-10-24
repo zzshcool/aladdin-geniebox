@@ -39,6 +39,13 @@ class GenieApplication : Application() {
 
         database = GenieDatabase.getInstance(this)
         storageManager = StorageManager(this)
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                storageManager.recoverPendingRestore()
+            } catch (e: Exception) {
+                android.util.Log.e("GenieApplication", "Save recovery pending; game startup will retry", e)
+            }
+        }
         safBridge = SafBridge(this, storageManager)
 
         // 背景預先部署 PPSSPP 必要資產至 files/system/PPSSPP
@@ -46,10 +53,13 @@ class GenieApplication : Application() {
             storageManager.deployPpssppAssetsIfNeeded()
         }
 
+        settingsRepository = SettingsRepository(this)
         gameRepository = GameRepository(
             database.gameDao(),
             database.favoriteDao(),
-            database.playHistoryDao()
+            database.playHistoryDao(),
+            storageManager,
+            settingsRepository
         )
         romSourceRepository = RomSourceRepository(
             database.romSourceDao(),
@@ -57,14 +67,18 @@ class GenieApplication : Application() {
         )
         saveRepository = SaveRepository(
             database.saveMetadataDao(),
-            storageManager
+            storageManager,
+            database.gameDao()
         )
-        settingsRepository = SettingsRepository(this)
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            settingsRepository.initializeVirtualGamepadDefault()
+        }
 
         romScanner = RomScanner(
             this,
             database.gameDao(),
-            database.romSourceDao()
+            database.romSourceDao(),
+            storageManager
         )
 
         storageCoordinator = StorageCoordinator(

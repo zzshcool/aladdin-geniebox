@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import java.io.*
 import java.util.zip.ZipInputStream
+import com.aladdin.geniebox.R
 
 class SafBridge(private val context: Context, private val storageManager: StorageManager) {
 
@@ -28,7 +29,7 @@ class SafBridge(private val context: Context, private val storageManager: Storag
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> },
         isCancelled: () -> Boolean = { false }
     ): File? {
-        enforceStagingCapacityLimit()
+        enforceStagingCapacityLimit(gameId)
 
         val gameDir = File(storageManager.romStagingDir, gameId).apply { mkdirs() }
         val destFile = File(gameDir, destFileName)
@@ -343,7 +344,9 @@ class SafBridge(private val context: Context, private val storageManager: Storag
     /**
      * 安全解壓單一 ROM ZIP 檔案（防 Zip Bomb 與路徑穿越），輸出至指定 gameId 目錄
      */
-    fun extractSingleRomFromZip(gameId: String, zipUri: Uri, allowedExtensions: List<String>): File? {
+    fun extractSingleRomFromZip(gameId: String, zipUri: Uri, allowedExtensions: List<String>,
+        onFailure: (Int) -> Unit = {}): File? {
+        enforceStagingCapacityLimit(gameId)
         val targetDir = File(storageManager.romStagingDir, gameId).apply { mkdirs() }
         return try {
             context.contentResolver.openInputStream(zipUri)?.use { rawStream ->
@@ -360,6 +363,7 @@ class SafBridge(private val context: Context, private val storageManager: Storag
                                 if (foundEntryName != null) {
                                     Log.w(TAG, "Zip contains multiple ROMs, rejecting: $name")
                                     extractedFile?.delete()
+                                    onFailure(R.string.launch_zip_contents)
                                     return null
                                 }
                                 foundEntryName = name
@@ -374,6 +378,7 @@ class SafBridge(private val context: Context, private val storageManager: Storag
                                             Log.e(TAG, "Zip Bomb protection triggered on $name")
                                             fos.close()
                                             out.delete()
+                                            onFailure(R.string.launch_zip_too_large)
                                             return null
                                         }
                                         fos.write(buffer, 0, read)
@@ -386,22 +391,28 @@ class SafBridge(private val context: Context, private val storageManager: Storag
                         zis.closeEntry()
                         entry = zis.nextEntry
                     }
+                    if (extractedFile == null) onFailure(R.string.launch_zip_contents)
                     extractedFile
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed extracting zip: $zipUri", e)
+            onFailure(when {
+                !storageManager.checkStorageAvailable() -> R.string.launch_storage_full
+                e is java.util.zip.ZipException -> R.string.launch_zip_invalid
+                else -> R.string.launch_source_unreadable
+            })
             null
         }
     }
 
-    private fun enforceStagingCapacityLimit() {
+    private fun enforceStagingCapacityLimit(protectedGameId: String) {
         val stagingRoot = storageManager.romStagingDir
         val files = stagingRoot.walkTopDown().filter { it.isFile }.toList()
         var totalBytes = files.sumOf { it.length() }
         if (totalBytes > MAX_STAGING_TOTAL_BYTES) {
             // 超過上限，刪除最舊的快取資料夾
-            val dirs = stagingRoot.listFiles()?.filter { it.isDirectory }?.sortedBy { it.lastModified() }
+            val dirs = stagingRoot.listFiles()?.filter { it.isDirectory && it.name != protectedGameId }?.sortedBy { it.lastModified() }
             if (dirs != null) {
                 for (d in dirs) {
                     val sz = d.walkTopDown().filter { it.isFile }.sumOf { it.length() }

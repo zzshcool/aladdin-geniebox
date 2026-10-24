@@ -12,8 +12,18 @@ import com.aladdin.geniebox.data.db.dao.romDocumentKey
 import com.aladdin.geniebox.data.db.entity.GameEntity
 import com.aladdin.geniebox.domain.model.EntryType
 import com.aladdin.geniebox.domain.model.PlatformType
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import android.provider.DocumentsContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.aladdin.geniebox.data.storage.StorageManager
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.security.MessageDigest
@@ -21,12 +31,22 @@ import java.security.MessageDigest
 class RomScanner(
     private val context: Context,
     private val gameDao: GameDao,
-    private val romSourceDao: RomSourceDao
+    private val romSourceDao: RomSourceDao,
+    private val storageManager: StorageManager
 ) {
     companion object {
         private const val TAG = "RomScanner"
         private val COVER_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp")
     }
+
+    private val scanMutex = Mutex()
+    private val _progress = MutableStateFlow<ScanProgress?>(null)
+    val progress = _progress.asStateFlow()
+    @Volatile private var scanJob: Job? = null
+    fun cancelScan() { scanJob?.cancel() }
+    private data class ScanDocument(val uri: Uri, val name: String, val isDirectory: Boolean,
+        val size: Long, val modified: Long)
+
 
     data class ScanProgress(
         val sourceId: String,
@@ -40,68 +60,92 @@ class RomScanner(
         sourceId: String,
         treeUri: Uri,
         onProgress: suspend (ScanProgress) -> Unit = {}
-    ): Int = withContext(Dispatchers.IO) {
-        val rootDoc = DocumentFile.fromTreeUri(context, treeUri)
-        if (rootDoc == null || !rootDoc.canRead()) {
-            onProgress(ScanProgress(sourceId, 0, "", isFinished = true, error = AppLanguage.text(R.string.ui_unable_to_read_the_game_folder)))
-            return@withContext 0
-        }
-
-        val discoveredGames = mutableListOf<GameEntity>()
+    ): Int = scanMutex.withLock { withContext(Dispatchers.IO) {
+        scanJob = currentCoroutineContext()[Job]
+        suspend fun report(value: ScanProgress) { _progress.value = value; onProgress(value) }
         var count = 0
-
         try {
+            report(ScanProgress(sourceId, 0, ""))
+            val rootDoc = DocumentFile.fromTreeUri(context, treeUri)
+            if (rootDoc == null || !rootDoc.canRead()) {
+                report(ScanProgress(sourceId, 0, "", isFinished = true,
+                    error = AppLanguage.text(R.string.ui_unable_to_read_the_game_folder)))
+                return@withContext 0
+            }
+            val discoveredGames = mutableListOf<GameEntity>()
+            val existing = gameDao.getSourceGames(sourceId).associateBy { romDocumentKey(it.documentUri) }
+
             // 優先檢查是否有標準 GenieROMs 目錄
             val genieRomsDir = rootDoc.findFile("GenieROMs")
             val targetRoot = if (genieRomsDir != null && genieRomsDir.isDirectory) genieRomsDir else rootDoc
 
             // 進行遞迴掃描
             scanDirectory(
-                dir = targetRoot,
+                dir = targetRoot.uri,
                 sourceId = sourceId,
                 currentRelPath = "",
                 outGames = discoveredGames,
+                existing = existing,
                 onFileScanned = { fileName ->
                     count++
                     if (count % 10 == 0) {
-                        onProgress(ScanProgress(sourceId, count, fileName, isFinished = false))
+                        report(ScanProgress(sourceId, count, fileName, isFinished = false))
                     }
                 }
             )
 
             // 批次增量寫入資料庫
-            if (discoveredGames.isNotEmpty()) {
-                gameDao.upsertScannedGames(discoveredGames)
-            }
+            gameDao.completeSourceScan(sourceId, discoveredGames)
+            storageManager.reconcileBackupGames()
 
             // 更新來源掃描時間
             romSourceDao.updateLastScannedTime(sourceId, System.currentTimeMillis())
             romSourceDao.updateConnectionStatus(sourceId, true)
 
-            onProgress(ScanProgress(sourceId, discoveredGames.size, AppLanguage.text(R.string.ui_scan_complete), isFinished = true))
+            report(ScanProgress(sourceId, discoveredGames.size, AppLanguage.text(R.string.ui_scan_complete), isFinished = true))
             discoveredGames.size
+        } catch (e: CancellationException) {
+            _progress.value = ScanProgress(sourceId, count, "", true, AppLanguage.text(R.string.opt_scan_cancelled))
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Scan failed for source $sourceId", e)
-            onProgress(ScanProgress(sourceId, count, "", isFinished = true, error = e.localizedMessage))
+            report(ScanProgress(sourceId, count, "", isFinished = true, error = e.localizedMessage))
             0
-        }
-    }
+        } finally { scanJob = null }
+    } }
 
     private suspend fun scanDirectory(
-        dir: DocumentFile,
+        dir: Uri,
         sourceId: String,
         currentRelPath: String,
         outGames: MutableList<GameEntity>,
+        existing: Map<String, GameEntity>,
         onFileScanned: suspend (String) -> Unit
     ) {
-        val files = dir.listFiles()
+        currentCoroutineContext().ensureActive()
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            dir, DocumentsContract.getDocumentId(dir))
+        val columns = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+        val files = context.contentResolver.query(childrenUri, columns, null, null, null)?.use { cursor ->
+            val result = ArrayList<ScanDocument>(cursor.count)
+            while (cursor.moveToNext()) {
+                currentCoroutineContext().ensureActive()
+                result += ScanDocument(DocumentsContract.buildDocumentUriUsingTree(dir, cursor.getString(0)),
+                    cursor.getString(1) ?: continue, cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR,
+                    cursor.getLong(3), cursor.getLong(4))
+            }
+            result
+        } ?: error("Cannot enumerate ROM directory: ${dir}")
         val cueReferencedBins = mutableSetOf<String>()
 
         // 第一階段：先收集目錄內所有 CUE 引用的 BIN 檔與封面圖
         val coverMap = mutableMapOf<String, String>() // baseName -> imageUri
 
         for (file in files) {
-            val name = file.name ?: continue
+            currentCoroutineContext().ensureActive()
+            val name = file.name
             val ext = name.substringAfterLast('.', "").lowercase()
 
             if (COVER_EXTENSIONS.contains(ext)) {
@@ -126,10 +170,12 @@ class RomScanner(
 
         // 第二階段：處理遊戲檔案與子目錄
         for (file in files) {
-            val name = file.name ?: continue
+            currentCoroutineContext().ensureActive()
+            val name = file.name
             if (file.isDirectory) {
                 val subPath = if (currentRelPath.isEmpty()) name else "$currentRelPath/$name"
-                scanDirectory(file, sourceId, subPath, outGames, onFileScanned)
+                scanDirectory(file.uri,
+                    sourceId, subPath, outGames, existing, onFileScanned)
             } else {
                 val ext = name.substringAfterLast('.', "").lowercase()
                 val base = name.substringBeforeLast('.')
@@ -147,7 +193,9 @@ class RomScanner(
                     val relFilePath = if (currentRelPath.isEmpty()) name else "$currentRelPath/$name"
                     val stableId = generateStableId(file.uri.toString())
                     val cover = coverMap[base.lowercase()]
-                    val (pinyin, zhuyin) = PinyinZhuYinIndex.generateSearchIndex(base)
+                    val old = existing[romDocumentKey(file.uri.toString())]
+                    val (pinyin, zhuyin) = if (old != null && old.title == base)
+                        old.pinyinIndex to old.zhuyinIndex else PinyinZhuYinIndex.generateSearchIndex(base)
 
                     val entryType = when (ext) {
                         "zip" -> EntryType.ZIP
@@ -165,8 +213,8 @@ class RomScanner(
                             relativePath = relFilePath,
                             documentUri = file.uri.toString(),
                             entryType = entryType.name,
-                            sizeBytes = file.length(),
-                            lastModified = file.lastModified(),
+                            sizeBytes = file.size,
+                            lastModified = file.modified,
                             coverUri = cover,
                             pinyinIndex = pinyin,
                             zhuyinIndex = zhuyin,
