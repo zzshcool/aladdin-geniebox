@@ -10,6 +10,7 @@ class CoreRegistry(private val context: Context) {
 
     companion object {
         const val PS1_BIOS_SIZE_BYTES = 512 * 1024
+        private val CORE_ABIS = listOf("arm64-v8a", "armeabi-v7a")
     }
 
     val cores: Map<PlatformType, CoreDescriptor> = mapOf(
@@ -19,7 +20,7 @@ class CoreRegistry(private val context: Context) {
             displayName = "FCEUmm (NES/FC)",
             version = "commit-ac0d00a",
             soFileName = "libfceumm_libretro_android.so",
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = CORE_ABIS,
             requiresBios = false,
             upstreamUrl = "https://github.com/libretro/libretro-fceumm",
             gitCommit = "ac0d00a7fc01166f84c7bac01d1084ebfd2b865e",
@@ -31,7 +32,7 @@ class CoreRegistry(private val context: Context) {
             displayName = "Gambatte (GB/GBC)",
             version = "commit-d9d6cd0",
             soFileName = "libgambatte_libretro_android.so",
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = CORE_ABIS,
             requiresBios = false,
             upstreamUrl = "https://github.com/libretro/gambatte-libretro",
             gitCommit = "d9d6cd06382d1ced30de34d56d3609452323dab1",
@@ -43,7 +44,7 @@ class CoreRegistry(private val context: Context) {
             displayName = "mGBA (GBA)",
             version = "0.10.3",
             soFileName = "libmgba_libretro_android.so",
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = CORE_ABIS,
             requiresBios = false,
             upstreamUrl = "https://github.com/mgba-emu/mgba",
             gitCommit = "1c61b54208ca6266129d0f2394c04bd8c44f98c5",
@@ -55,7 +56,7 @@ class CoreRegistry(private val context: Context) {
             displayName = "Snes9x (SFC/SNES)",
             version = "1.63-1bcc369",
             soFileName = "libsnes9x_libretro_android.so",
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = CORE_ABIS,
             requiresBios = false,
             upstreamUrl = "https://github.com/snes9xgit/snes9x",
             gitCommit = "1bcc369e89f08243e0a462882fb1f3e42e51de3a",
@@ -67,7 +68,7 @@ class CoreRegistry(private val context: Context) {
             displayName = "PCSX ReARMed (PS1)",
             version = "r23-c881679",
             soFileName = "libpcsx_rearmed_libretro_android.so",
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = CORE_ABIS,
             requiresBios = true,
             biosFiles = listOf("scph5501.bin", "scph5500.bin", "scph5502.bin"),
             supportsDiskSwap = true,
@@ -81,7 +82,7 @@ class CoreRegistry(private val context: Context) {
             displayName = "PPSSPP Libretro (PSP)",
             version = "v1.17.1",
             soFileName = "libppsspp_libretro_android.so",
-            supportedAbis = listOf("arm64-v8a"),
+            supportedAbis = CORE_ABIS,
             requiresBios = false,
             upstreamUrl = "https://github.com/hrydgard/ppsspp",
             gitCommit = "d479b74ed9c3e321bc3735da29bc125a2ac3b9b2",
@@ -90,24 +91,26 @@ class CoreRegistry(private val context: Context) {
     )
 
     /**
-     * 檢查當前系統架構是否相容 arm64-v8a
+     * 檢查目前執行程序是否支援已封裝的 ARM 32／64 位元核心
      */
-    fun isAbiSupported(): Boolean {
-        val supportedAbis = Build.SUPPORTED_ABIS
-        return supportedAbis.contains("arm64-v8a")
-    }
+    private val coreAbi: String?
+        get() = (if (android.os.Process.is64Bit()) Build.SUPPORTED_64_BIT_ABIS
+            else Build.SUPPORTED_32_BIT_ABIS).firstOrNull { it in CORE_ABIS }
+
+    fun isAbiSupported(): Boolean = coreAbi != null
 
     /**
      * 取得核心動態函式庫檔案路徑，依序搜尋 nativeLibraryDir、App 私有目錄與 APK 直接抽出備援
      */
     fun getCoreLibraryFile(platform: PlatformType): File? {
         val desc = cores[platform] ?: return null
+        val abi = coreAbi ?: return null
         val libDir = File(context.applicationInfo.nativeLibraryDir)
         val fileInLib = File(libDir, desc.soFileName)
         if (fileInLib.exists()) return fileInLib
 
-        // 亦可相容放置於 files/cores/ 目錄 (供本機除錯或特定封裝)
-        val fileInApp = File(context.filesDir, "cores/${desc.soFileName}")
+        // 依執行架構區分 files/cores/ 備援，避免共用不同位元的核心
+        val fileInApp = File(context.filesDir, "cores/$abi/${desc.soFileName}")
         if (fileInApp.exists()) return fileInApp
 
         // 備援：若系統未解壓 (如某些客製 ROM)，直接自 APK 封裝中解壓至 files/cores/
@@ -124,8 +127,8 @@ class CoreRegistry(private val context: Context) {
             if (!apkFile.exists()) return null
 
             java.util.zip.ZipFile(apkFile).use { zip ->
-                val primaryEntry = zip.getEntry("lib/arm64-v8a/$soFileName")
-                    ?: zip.entries().asSequence().firstOrNull { it.name.endsWith("/$soFileName") }
+                val abi = coreAbi ?: return null
+                val primaryEntry = zip.getEntry("lib/$abi/$soFileName")
                     ?: return null
 
                 targetFile.parentFile?.mkdirs()

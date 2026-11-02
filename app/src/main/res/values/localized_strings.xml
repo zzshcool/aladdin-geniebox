@@ -121,7 +121,7 @@
     <string name="ui_unassigned">未指派</string>
     <string name="ui_game_controller">遊戲控制器</string>
     <string name="ui_checking_the_core_and_device">正在檢查核心與設備環境…</string>
-    <string name="ui_this_device_does_not_support_arm64_v8a_a">設備未支援 arm64-v8a ABI，無法載入 64 位元模擬核心。</string>
+    <string name="ui_this_device_does_not_support_arm64_v8a_a">目前執行架構不支援 ARM 32／64 位元模擬核心（armeabi-v7a／arm64-v8a）。</string>
     <string name="ui_missing_value_core_value_build_it_with_scripts">缺少 %1$s 核心動態庫 (%2$s)。請執行 scripts/build_cores.sh。</string>
     <string name="ui_preparing_psp_system_resources_and_fonts">正在準備 PSP 系統資源與字型…</string>
     <string name="ui_unable_to_deploy_psp_resources_check_available_storage">PPSSPP 系統資源部署失敗（可能內部儲存空間不足或讀寫異常）。請釋出儲存空間後重試。</string>

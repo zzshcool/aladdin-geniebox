@@ -17,6 +17,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.zIndex
+import android.content.res.Configuration
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -28,20 +31,22 @@ fun TvCard(
     onClick: () -> Unit,
     content: @Composable ColumnScope.(isFocused: Boolean) -> Unit
 ) {
+    val isTv = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.025f else 1.0f,
+        targetValue = if (isFocused && !isTv) 1.025f else 1.0f,
         animationSpec = tween(durationMillis = 150),
         label = "tvCardScale"
     )
     val surface by animateColorAsState(if (isFocused) CardDarkFocused else CardDark,
-        animationSpec = tween(150), label = "cardSurface")
+        animationSpec = tween(if (isTv) 0 else 150), label = "cardSurface")
 
     Card(
         modifier = modifier
             .scale(scale)
+            .zIndex(if (isFocused) 1f else 0f)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -68,11 +73,12 @@ fun FocusableButton(
     isPrimary: Boolean = false,
     enabled: Boolean = true
 ) {
+    val isTv = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     val scale by animateFloatAsState(
-        targetValue = if (isFocused && enabled) 1.015f else 1.0f,
+        targetValue = if (isFocused && enabled && !isTv) 1.015f else 1.0f,
         animationSpec = tween(durationMillis = 120),
         label = "btnScale"
     )

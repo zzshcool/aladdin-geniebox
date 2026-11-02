@@ -111,4 +111,15 @@
     <string name="opt_game_options">遊戲設定</string>
     <string name="opt_done">完成</string>
     <string name="opt_reset_layout">重設版面</string>
+    <string name="tv_local_folder">選擇本機遊戲資料夾</string>
+    <string name="tv_storage_volumes">儲存裝置</string>
+    <string name="tv_parent_folder">上一層</string>
+    <string name="tv_use_folder">使用此資料夾</string>
+    <string name="tv_cancel">取消</string>
+    <string name="tv_folder_unreadable">無法讀取資料夾，請確認檔案存取權限。</string>
+    <string name="tv_permission_explanation">這台裝置缺少系統資料夾選擇器，請允許 GenieBox 存取檔案，再選擇遊戲資料夾。</string>
+    <string name="tv_open_permission">開啟檔案存取設定</string>
+    <string name="tv_local_source">本機資料夾（TV Box）</string>
+    <string name="tv_permission_denied">尚未允許檔案存取，請開啟權限後重試。</string>
+    <string name="tv_permission_unavailable">無法開啟檔案權限設定，請至系統設定中的應用程式權限開啟。</string>
 </resources>

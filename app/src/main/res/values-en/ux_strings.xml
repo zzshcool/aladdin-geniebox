@@ -111,4 +111,15 @@
     <string name="opt_game_options">Game settings</string>
     <string name="opt_done">Done</string>
     <string name="opt_reset_layout">Reset layout</string>
+    <string name="tv_local_folder">Select a local game folder</string>
+    <string name="tv_storage_volumes">Storage devices</string>
+    <string name="tv_parent_folder">Parent folder</string>
+    <string name="tv_use_folder">Use this folder</string>
+    <string name="tv_cancel">Cancel</string>
+    <string name="tv_folder_unreadable">Cannot read this folder. Check file access permission.</string>
+    <string name="tv_permission_explanation">This device has no system folder picker. Allow GenieBox to access files, then select your game folder.</string>
+    <string name="tv_open_permission">Open file access settings</string>
+    <string name="tv_local_source">Local folder (TV Box)</string>
+    <string name="tv_permission_denied">File access is not allowed. Enable permission and try again.</string>
+    <string name="tv_permission_unavailable">Cannot open file access settings. Enable permission in system app settings.</string>
 </resources>

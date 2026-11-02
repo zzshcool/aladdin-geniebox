@@ -121,7 +121,7 @@
     <string name="ui_unassigned">Unassigned</string>
     <string name="ui_game_controller">Game controller</string>
     <string name="ui_checking_the_core_and_device">Checking the core and device…</string>
-    <string name="ui_this_device_does_not_support_arm64_v8a_a">This device does not support arm64-v8a. A 64-bit emulator core cannot be loaded.</string>
+    <string name="ui_this_device_does_not_support_arm64_v8a_a">The current process does not support the ARM 32-bit or 64-bit emulator cores (armeabi-v7a / arm64-v8a).</string>
     <string name="ui_missing_value_core_value_build_it_with_scripts">Missing %1$s core (%2$s). Build it with scripts/build_cores.sh.</string>
     <string name="ui_preparing_psp_system_resources_and_fonts">Preparing PSP system resources and fonts…</string>
     <string name="ui_unable_to_deploy_psp_resources_check_available_storage">Unable to deploy PSP resources. Check available storage and try again.</string>

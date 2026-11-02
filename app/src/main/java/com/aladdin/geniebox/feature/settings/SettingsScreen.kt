@@ -3,6 +3,9 @@ package com.aladdin.geniebox.feature.settings
 import com.aladdin.geniebox.R
 import com.aladdin.geniebox.app.AppLanguage
 import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import com.aladdin.geniebox.data.storage.LocalDocumentsProvider
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.aladdin.geniebox.emulator.CoreRegistry
@@ -172,9 +175,9 @@ fun SettingsScreen(
         }
     }
 
-    val addSourceLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
+    var showLocalPicker by rememberSaveable { mutableStateOf(false) }
+    var showFilePermission by rememberSaveable { mutableStateOf(false) }
+    val registerSource: (Uri?) -> Unit = { uri ->
         if (uri != null) {
             coroutineScope.launch {
                 try {
@@ -210,6 +213,54 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    val addSourceLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree(), registerSource)
+    val fileAccessLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (LocalDocumentsProvider.hasAccess(context)) showLocalPicker = true
+        else actionMessage = AppLanguage.text(R.string.tv_permission_denied)
+    }
+    val legacyAccessLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) showLocalPicker = true
+        else actionMessage = AppLanguage.text(R.string.tv_permission_denied)
+    }
+    val openLocalFolder = {
+        if (LocalDocumentsProvider.hasAccess(context)) showLocalPicker = true
+        else showFilePermission = true
+    }
+    if (showFilePermission) {
+        AlertDialog(onDismissRequest = { showFilePermission = false },
+            title = { Text(AppLanguage.text(R.string.tv_local_source)) },
+            text = { Text(AppLanguage.text(R.string.tv_permission_explanation)) },
+            confirmButton = {
+                FocusableButton(text = AppLanguage.text(R.string.tv_open_permission), onClick = {
+                    showFilePermission = false
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        try {
+                            fileAccessLauncher.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:${context.packageName}")))
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            try { fileAccessLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+                            catch (_: android.content.ActivityNotFoundException) {
+                                actionMessage = AppLanguage.text(R.string.tv_permission_unavailable)
+                            }
+                        }
+                    } else legacyAccessLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                })
+            }, dismissButton = {
+                FocusableButton(text = AppLanguage.text(R.string.tv_cancel), onClick = { showFilePermission = false })
+            })
+    }
+    if (showLocalPicker) {
+        LocalFolderPicker(onDismiss = { showLocalPicker = false }, onSelect = { folder ->
+            try {
+                val uri = LocalDocumentsProvider.selectFolder(context, folder)
+                showLocalPicker = false
+                registerSource(uri)
+            } catch (_: Exception) {
+                actionMessage = AppLanguage.text(R.string.tv_folder_unreadable)
+            }
+        })
     }
 
     val playerProfiles by app.inputManager.playerProfiles.collectAsState()
@@ -301,14 +352,14 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(BgDark)
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                    .padding(horizontal = 24.dp, vertical = if (isTvDevice) 8.dp else 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("GENIEBOX / SYSTEM", color = TextSecondary, fontSize = 10.sp,
+                if (!isTvDevice) Text("GENIEBOX / SYSTEM", color = TextSecondary, fontSize = 10.sp,
                     letterSpacing = 2.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-                Spacer(Modifier.height(4.dp))
+                if (!isTvDevice) Spacer(Modifier.height(4.dp))
                 Text(
                     text = AppLanguage.text(R.string.ui_settings),
                     fontSize = 24.sp,
@@ -348,14 +399,14 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .padding(horizontal = 24.dp),
-            contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp),
+            contentPadding = PaddingValues(top = if (isTvDevice) 8.dp else 16.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            if (!isTvDevice) item {
                 Text("${(selectedSection + 1).toString().padStart(2, '0')}  /  ${AppLanguage.text(sections[selectedSection])}",
                     color = TextSecondary, fontSize = 12.sp, letterSpacing = 1.sp)
             }
-            if (actionMessage.isNotEmpty()) {
+            if (actionMessage.isNotEmpty() && (!isTvDevice || scanProgress?.isFinished != false)) {
                 item {
                     Box(
                         modifier = Modifier
@@ -368,7 +419,7 @@ fun SettingsScreen(
                 }
             }
 
-            scanProgress?.let { progress ->
+            scanProgress?.takeIf { !isTvDevice || (selectedSection == 0 && (!it.isFinished || (it.error != null && actionMessage.isEmpty()))) }?.let { progress ->
                 item {
                     Column(Modifier.fillMaxWidth().background(CardDark).padding(12.dp)) {
                         Text(progress.error ?: AppLanguage.text(
@@ -505,9 +556,20 @@ fun SettingsScreen(
                             text = AppLanguage.text(R.string.ui_add_game_folder_phone_usb_drive),
                             enabled = !isScanning && scanProgress?.isFinished != false,
                             onClick = {
-                                addSourceLauncher.launch(null)
+                                val picker = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                                    .resolveActivity(context.packageManager)
+                                if (picker == null || picker.packageName == "com.android.tv.frameworkpackagestubs") {
+                                    openLocalFolder()
+                                } else {
+                                    try { addSourceLauncher.launch(null) }
+                                    catch (_: android.content.ActivityNotFoundException) { openLocalFolder() }
+                                }
                             }
                         )
+
+                        FocusableButton(text = AppLanguage.text(R.string.tv_local_source),
+                            enabled = !isScanning && scanProgress?.isFinished != false,
+                            onClick = { openLocalFolder() })
 
                         if (sources.isEmpty()) {
                             Text(AppLanguage.text(R.string.ui_no_game_folders_yet_use_the_button_above), color = TextTertiary, fontSize = 13.sp)

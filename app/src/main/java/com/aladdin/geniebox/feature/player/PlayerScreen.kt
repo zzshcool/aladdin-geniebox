@@ -144,7 +144,7 @@ fun PlayerScreen(
     }
 
     val shouldShowVirtualGamepad = remember(virtualGamepadMode, hasPhysicalGamepad, showPauseMenu, isTvDevice) {
-        if (showPauseMenu) return@remember false
+        if (isTvDevice || showPauseMenu) return@remember false
         when (virtualGamepadMode) {
             1 -> true // 強制顯示 (手機外接手把仍可觸控)
             2 -> false // 強制隱藏
@@ -770,7 +770,8 @@ fun PlayerScreen(
                 Column(
                     modifier = Modifier
                         .widthIn(max = if (twoColumns) 1000.dp else 480.dp)
-                        .fillMaxHeight(0.94f)
+                        .then(if (isTvDevice) Modifier.fillMaxWidth(0.92f) else Modifier)
+                        .fillMaxHeight(if (isTvDevice) 0.9f else 0.94f)
                         .background(CardDark, RoundedCornerShape(4.dp))
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -789,7 +790,7 @@ fun PlayerScreen(
                     }
                     if (twoColumns) {
                         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                            Column(Modifier.weight(if (isTvDevice) 0.8f else 1f).fillMaxHeight().verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(8.dp), content = primaryActions)
                             Column(Modifier.weight(1.3f).fillMaxHeight(),
                                 verticalArrangement = Arrangement.spacedBy(8.dp), content = detailActions)

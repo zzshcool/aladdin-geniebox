@@ -111,4 +111,15 @@
     <string name="opt_game_options">游戏设置</string>
     <string name="opt_done">完成</string>
     <string name="opt_reset_layout">重置布局</string>
+    <string name="tv_local_folder">选择本机游戏文件夹</string>
+    <string name="tv_storage_volumes">存储设备</string>
+    <string name="tv_parent_folder">上一级</string>
+    <string name="tv_use_folder">使用此文件夹</string>
+    <string name="tv_cancel">取消</string>
+    <string name="tv_folder_unreadable">无法读取文件夹，请确认文件访问权限。</string>
+    <string name="tv_permission_explanation">此设备缺少系统文件夹选择器，请允许 GenieBox 访问文件，再选择游戏文件夹。</string>
+    <string name="tv_open_permission">打开文件访问设置</string>
+    <string name="tv_local_source">本机文件夹（TV Box）</string>
+    <string name="tv_permission_denied">尚未允许文件访问，请开启权限后重试。</string>
+    <string name="tv_permission_unavailable">无法打开文件权限设置，请到系统设置的应用权限中开启。</string>
 </resources>

@@ -175,8 +175,8 @@ fun LibraryScreen(
     val continueCore = continueGame?.let { app.coreRegistry.cores[it.platform] }
     val continueSave = continueSaves.firstOrNull { it.slotIndex == 0 && it.coreId == continueCore?.coreId &&
         it.coreVersion == continueCore?.version && it.formatVersion == 1 }
+    LaunchedEffect(isTvDevice, displayedGames.map { it.id }) {
     val restoreGameId = focusedGameId?.takeIf { id -> displayedGames.any { it.id == id } } ?: displayedGames.firstOrNull()?.id
-    LaunchedEffect(isTvDevice, displayedGames) {
         if (isTvDevice && restoreGameId != null) {
             val index = displayedGames.indexOfFirst { it.id == restoreGameId }
             if (index >= 0) {
@@ -219,14 +219,13 @@ fun LibraryScreen(
             dismissButton = { TextButton(onClick = { editGameId = null }) { Text(AppLanguage.text(R.string.ux_cancel)) } })
     }
     val currentDisplayedGames by rememberUpdatedState(displayedGames)
-    val currentFocusedGameId by rememberUpdatedState(focusedGameId)
     val searchFocusRequester = remember { FocusRequester() }
 
     // 註冊 TV 實體手把快捷鍵 (Finding 11, R2-15)
     DisposableEffect(Unit) {
         app.inputManager.uiShortcutListener = object : com.aladdin.geniebox.input.UiShortcutListener {
             override fun onToggleFavorite() {
-                val targetGame = currentDisplayedGames.find { it.id == currentFocusedGameId }
+                val targetGame = currentDisplayedGames.find { it.id == focusedGameId }
                     ?: currentDisplayedGames.firstOrNull()
                 if (targetGame != null) {
                     coroutineScope.launch {
@@ -286,16 +285,16 @@ fun LibraryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(BgDark)
-                    .padding(horizontal = if (isTvDevice) 32.dp else 20.dp, vertical = if (compactLandscape) 4.dp else 12.dp),
-                verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 4.dp else 10.dp)
+                    .padding(horizontal = if (isTvDevice) 32.dp else 20.dp, vertical = if (compactLandscape || isTvDevice) 4.dp else 12.dp),
+                verticalArrangement = Arrangement.spacedBy(if (compactLandscape || isTvDevice) 4.dp else 10.dp)
             ) {
-                if (compactLandscape) {
+                if (compactLandscape || isTvDevice) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        IconButton(onClick = onNavigateWelcome) {
+                        if (!isTvDevice) IconButton(onClick = onNavigateWelcome) {
                             Icon(Icons.Default.ArrowBack, contentDescription = AppLanguage.text(R.string.ui_welcome), tint = TextSecondary)
                         }
                         if (isSearchActive || searchQuery.isNotEmpty()) {
@@ -327,6 +326,7 @@ fun LibraryScreen(
                             }
                         }
                         sortMenu()
+                        if (isTvDevice) FocusableButton(text = AppLanguage.text(R.string.ui_settings), onClick = onNavigateSettings)
                     }
                 } else {
                 Row(
@@ -418,7 +418,7 @@ fun LibraryScreen(
                 Surface(color = CardDark) {
                     Text(
                         text = AppLanguage.text(R.string.ui_a_play_y_favorite_l_r_change_platform),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 14.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 6.dp),
                         fontSize = 13.sp,
                         color = TextSecondary
                     )
@@ -542,7 +542,11 @@ fun LibraryScreen(
                 } else {
                     // 海報牆網格
                     BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val posterHeight = if (compactLandscape) maxHeight.coerceIn(128.dp, 220.dp) else 224.dp
+                    val posterHeight = when {
+                        isTvDevice -> ((maxHeight - 48.dp) / 2).coerceIn(132.dp, 224.dp)
+                        compactLandscape -> maxHeight.coerceIn(128.dp, 220.dp)
+                        else -> 224.dp
+                    }
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Adaptive(minSize = if (isTvDevice) 190.dp else 140.dp),
@@ -607,6 +611,7 @@ fun GamePosterCard(
     cardHeight: Dp = 260.dp,
     focusRequester: FocusRequester? = null
 ) {
+    val isTvCard = focusRequester != null
     var coverReady by remember(game.coverUri) { mutableStateOf(false) }
     TvCard(
         modifier = Modifier
@@ -642,7 +647,7 @@ fun GamePosterCard(
                 Column(
                     modifier = Modifier.fillMaxSize()
                         .background(CardDarkFocused)
-                        .padding(horizontal = 14.dp, vertical = if (cardHeight < 200.dp) 12.dp else 34.dp),
+                        .padding(horizontal = 14.dp, vertical = if (isTvCard) 4.dp else if (cardHeight < 200.dp) 12.dp else 34.dp),
                     verticalArrangement = Arrangement.Center
                 ) {
                     Text(
@@ -650,8 +655,10 @@ fun GamePosterCard(
                         fontSize = if (cardHeight < 200.dp) 20.sp else 28.sp, letterSpacing = 3.sp,
                         fontWeight = FontWeight.SemiBold, color = AladdinGold
                     )
-                    Spacer(Modifier.height(12.dp))
-                    Box(Modifier.width(24.dp).height(1.dp).background(AladdinGold.copy(alpha = 0.5f)))
+                    if (!isTvCard) {
+                        Spacer(Modifier.height(12.dp))
+                        Box(Modifier.width(24.dp).height(1.dp).background(AladdinGold.copy(alpha = 0.5f)))
+                    }
                 }
             }
 
@@ -663,13 +670,13 @@ fun GamePosterCard(
                     .align(Alignment.TopStart),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                PlatformBadge(platform = game.platform)
+                if (!isTvCard || coverReady) PlatformBadge(platform = game.platform)
                 if (!game.isAvailable) {
                     OfflineBadge()
                 }
             }
 
-            IconButton(onClick = onEdit, modifier = Modifier.align(Alignment.BottomStart).size(48.dp)
+            IconButton(onClick = onEdit, modifier = Modifier.align(Alignment.BottomStart).size(if (isTvCard) 36.dp else 48.dp)
                 .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))) {
                 Text("⋯", color = Color.White, fontSize = 24.sp,
                     modifier = Modifier.semantics { contentDescription = AppLanguage.text(R.string.opt_edit_game) })
@@ -680,7 +687,7 @@ fun GamePosterCard(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(4.dp)
-                    .size(48.dp)
+                    .size(if (isTvCard) 36.dp else 48.dp)
                     .background(Color.Black.copy(alpha = 0.55f), androidx.compose.foundation.shape.CircleShape)
             ) {
                 Icon(
@@ -696,6 +703,7 @@ fun GamePosterCard(
 
         Text(
             text = game.title,
+            modifier = if (isTvCard) Modifier.height(48.dp) else Modifier,
             fontSize = 14.sp,
             fontWeight = if (isFocused) FontWeight.Bold else FontWeight.Medium,
             color = if (isFocused) AladdinGoldLight else TextPrimary,
