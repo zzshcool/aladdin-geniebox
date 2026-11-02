@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # 阿拉丁 GenieBox: Libretro 原生核心可重現建置與封裝腳本
-# 目標 ABI: arm64-v8a
+# 目標 ABI: arm64-v8a 或 armeabi-v7a（以第一個參數指定）
 # 支援平台: NES (FCEUmm), GB/GBC (Gambatte), GBA (mGBA), SFC (Snes9x), PS1 (PCSX ReARMed), PSP (PPSSPP)
 # ==============================================================================
 
@@ -10,11 +10,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build/cores"
-OUTPUT_DIR="${PROJECT_ROOT}/app/src/main/jniLibs/arm64-v8a"
+ABI="${1:-arm64-v8a}"
+case "${ABI}" in
+    arm64-v8a|armeabi-v7a) ;;
+    *) echo "不支援的 ABI: ${ABI}"; exit 1 ;;
+esac
+OUTPUT_DIR="${PROJECT_ROOT}/app/src/main/jniLibs/${ABI}"
 
 NDK_VERSION="26.1.10909125"
 ANDROID_API="26"
-ABI="arm64-v8a"
 
 # 自動偵測 Android NDK 與 CMake
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -103,7 +107,7 @@ if [ ! -d "mgba" ]; then
     git clone --depth 1 --branch "${TAG_MGBA}" https://github.com/mgba-emu/mgba.git
 fi
 cd mgba
-mkdir -p build_android && cd build_android
+mkdir -p "build_android_${ABI}" && cd "build_android_${ABI}"
 "${CMAKE_BIN}" -B . -S .. -G "Ninja" \
       -DCMAKE_MAKE_PROGRAM="${NINJA_BIN}" \
       -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
@@ -151,7 +155,7 @@ if [ ! -d "ppsspp" ]; then
 fi
 cd ppsspp
 git submodule update --init --recursive
-mkdir -p build_android && cd build_android
+mkdir -p "build_android_${ABI}" && cd "build_android_${ABI}"
 "${CMAKE_BIN}" -B . -S .. -G "Ninja" \
       -DCMAKE_MAKE_PROGRAM="${NINJA_BIN}" \
       -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
@@ -169,5 +173,5 @@ cp ppsspp_libretro_android.so "${OUTPUT_DIR}/libppsspp_libretro_android.so"
 mkdir -p "${PROJECT_ROOT}/app/src/main/assets/ppsspp"
 cp -r "${BUILD_DIR}/ppsspp/assets/"* "${PROJECT_ROOT}/app/src/main/assets/ppsspp/"
 
-echo "=== 核心編譯完成，所有 arm64-v8a 產物與 assets 已就緒 ==="
+echo "=== 核心編譯完成，所有 ${ABI} 產物與 assets 已就緒 ==="
 ls -lh "${OUTPUT_DIR}"

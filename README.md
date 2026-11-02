@@ -19,7 +19,7 @@
 
 ### 裝置需求與目前狀態
 
-- Android 8.0（API 26）以上，系統必須支援 `arm64-v8a` 64 位元 App。
+- Android 8.0（API 26）以上，系統須支援 `armeabi-v7a`（32 位元）或 `arm64-v8a`（64 位元）App，支援符合條件的手機與 TV Box。
 - TV 主要適配目標：Amlogic S905X5M Android TV Box；手機支援觸控與外接手把。
 - 手機與 TV 介面以清楚導航、快速選遊戲及流暢操作為設計目標。實際流暢度與遊戲速度依裝置、散熱、核心、遊戲及渲染設定而異。
 - 目前為開發中版本。已整合六個模擬核心，涵蓋下列平台；不代表全部遊戲或 S905X5M 實機相容性已完成驗證。PSP 尤其需要逐款實測，不保證所有遊戲滿速。
@@ -165,8 +165,9 @@ GenieROMs/
 設定 Android SDK、NDK 與專案使用的 JDK 後，使用 Gradle 8.7 執行以下指令。目前儲存庫只有 Wrapper 設定，未包含 `gradlew`／`gradlew.bat` 與 Wrapper JAR；請使用已安裝的 Gradle 8.7 或 Android Studio 的 Gradle 執行環境：
 
 ```bash
-# 1. 編譯六大平台原生 Libretro 核心 (.so 產物將輸出至 app/src/main/jniLibs/arm64-v8a)
-bash scripts/build_cores.sh
+# 1. 分別編譯六大平台的 64／32 位元核心（輸出至 jniLibs 對應 ABI 目錄）
+bash scripts/build_cores.sh arm64-v8a
+bash scripts/build_cores.sh armeabi-v7a
 
 # 2. 建置 Debug APK (支援 Android 電視盒側載)
 gradle :app:assembleDebug
@@ -212,6 +213,6 @@ gradle :app:testDebugUnitTest
 
 以 Amlogic S905X5M TV Box 與 Android 手機為主要適配目標，專注清楚、順手的操作體驗。
 
-**遊戲需自行準備：** 本 App 不包含 ROM、商業 BIOS 或遊戲下載服務，請使用自己有權使用的檔案。需要 Android 8.0 以上及支援 arm64-v8a 的系統；遊戲相容性與效能依裝置、核心和遊戲而異。
+**遊戲需自行準備：** 本 App 不包含 ROM、商業 BIOS 或遊戲下載服務，請使用自己有權使用的檔案。需要 Android 8.0 以上及支援 armeabi-v7a（32 位元）或 arm64-v8a（64 位元）的系統；遊戲相容性與效能依裝置、核心和遊戲而異。
 
 > 此文案描述產品功能與定位，不是相容性驗收證明。開發中版本發布時請保留測試版標示，列出版本變更、已知問題與實測裝置；未有測試結果前，不使用「所有遊戲滿速」或「所有手機與 TV 都非常流暢」等保證。
